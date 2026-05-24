@@ -158,6 +158,21 @@ std::string unique_extension_id(const std::string& base) {
     static std::atomic<unsigned int> counter{0};
     return base + "_" + std::to_string(++counter);
 }
+
+std::vector<std::string> split_token(const std::string& token) {
+    std::vector<std::string> segments;
+    size_t start = 0;
+    while (start <= token.size()) {
+        const size_t dot = token.find('.', start);
+        if (dot == std::string::npos) {
+            segments.push_back(token.substr(start));
+            break;
+        }
+        segments.push_back(token.substr(start, dot - start));
+        start = dot + 1;
+    }
+    return segments;
+}
 }  // namespace
 
 TEST(PolicyCapabilityEngineReal, RejectEmptyToken) {
@@ -237,4 +252,69 @@ TEST(PolicyCapabilityEngineReal, RejectCapabilityMismatch) {
 
     auto result = capability_engine.verify_token(token, "network:send");
     EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, AcceptValidSignature) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("sig_valid");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto result = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectInvalidSignature) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("sig_invalid");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+    segments[3] = "badsignature";
+    const std::string tampered_token = segments[0] + "." + segments[1] + "." + segments[2] + "." + segments[3];
+
+    auto result = capability_engine.verify_token(tampered_token, "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectTamperedPayload) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("payload");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+    segments[1] = unique_extension_id("tampered");
+    const std::string tampered_token = segments[0] + "." + segments[1] + "." + segments[2] + "." + segments[3];
+
+    auto result = capability_engine.verify_token(tampered_token, "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectKeyMismatch) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("key_mismatch");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    set_policy_signing_key_for_tests("rotated-policy-key");
+    auto result = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(result.is_valid);
+
+    reset_policy_signing_key_for_tests();
 }

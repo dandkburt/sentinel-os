@@ -7,11 +7,15 @@
 #include <vector>
 #include <sstream>
 #include <cctype>
+#include <mutex>
 
 namespace sentinel::services::policy {
 
 namespace {
 constexpr const char* kTokenVersion = "v1";
+constexpr const char* kDefaultSigningKey = "sentinel-policy-dev-key";
+std::mutex g_signing_key_mutex;
+std::string g_signing_key = kDefaultSigningKey;
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -115,10 +119,72 @@ bool is_safe_token_segment(const std::string& value) {
     return true;
 }
 
+std::string current_signing_key() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    return g_signing_key;
+}
+
+std::string build_unsigned_token(const std::string& version,
+                                 const std::string& extension_id,
+                                 const std::string& token_id) {
+    return version + "." + extension_id + "." + token_id;
+}
+
+std::string to_hex(uint64_t value) {
+    std::ostringstream ss;
+    ss << std::hex << value;
+    return ss.str();
+}
+
+std::string compute_signature(const std::string& unsigned_token, const std::string& signing_key) {
+    // Scaffolding signature implementation; replace with HMAC-SHA256 in hardening pass.
+    const uint64_t sig = std::hash<std::string>{}(signing_key + "|" + unsigned_token);
+    return to_hex(sig);
+}
+
+enum class TokenValidationFailure {
+    EmptyToken,
+    MalformedToken,
+    UnknownToken,
+    PayloadTampered,
+    SignatureInvalid,
+    ExpiredToken,
+    CapabilityMismatch,
+};
+
+const char* to_string(TokenValidationFailure failure) {
+    switch (failure) {
+        case TokenValidationFailure::EmptyToken:
+            return "empty-token";
+        case TokenValidationFailure::MalformedToken:
+            return "malformed-token";
+        case TokenValidationFailure::UnknownToken:
+            return "unknown-token";
+        case TokenValidationFailure::PayloadTampered:
+            return "payload-tampered";
+        case TokenValidationFailure::SignatureInvalid:
+            return "signature-invalid";
+        case TokenValidationFailure::ExpiredToken:
+            return "expired-token";
+        case TokenValidationFailure::CapabilityMismatch:
+            return "capability-mismatch";
+    }
+    return "unknown";
+}
+
+void log_validation_failure(TokenValidationFailure failure,
+                            const std::string& token,
+                            const std::string& required_capability) {
+    std::cerr << "Token validation failed [" << to_string(failure)
+              << "] token='" << token
+              << "' required='" << required_capability << "'" << std::endl;
+}
+
 struct ParsedToken {
     std::string version;
     std::string extension_id;
     std::string token_id;
+    std::string signature;
 };
 
 bool parse_token(const std::string& token, ParsedToken& out) {
@@ -136,13 +202,19 @@ bool parse_token(const std::string& token, ParsedToken& out) {
         return false;
     }
 
-    if (token.find('.', second_dot + 1) != std::string::npos) {
+    const auto third_dot = token.find('.', second_dot + 1);
+    if (third_dot == std::string::npos) {
+        return false;
+    }
+
+    if (token.find('.', third_dot + 1) != std::string::npos) {
         return false;
     }
 
     out.version = token.substr(0, first_dot);
     out.extension_id = token.substr(first_dot + 1, second_dot - first_dot - 1);
-    out.token_id = token.substr(second_dot + 1);
+    out.token_id = token.substr(second_dot + 1, third_dot - second_dot - 1);
+    out.signature = token.substr(third_dot + 1);
 
     if (out.version != kTokenVersion) {
         return false;
@@ -151,6 +223,9 @@ bool parse_token(const std::string& token, ParsedToken& out) {
         return false;
     }
     if (!is_safe_token_segment(out.token_id)) {
+        return false;
+    }
+    if (!is_safe_token_segment(out.signature)) {
         return false;
     }
 
@@ -162,17 +237,33 @@ bool parse_token(const std::string& token, ParsedToken& out) {
 class CapabilityEngineImpl : public ICapabilityEngine {
 public:
     CapabilityVerificationResult verify_token(const std::string& token, const std::string& required_capability) override {
+        if (token.empty()) {
+            log_validation_failure(TokenValidationFailure::EmptyToken, token, required_capability);
+            return {false, "", "", 0, 0};
+        }
+
         ParsedToken parsed;
         if (!parse_token(token, parsed)) {
+            log_validation_failure(TokenValidationFailure::MalformedToken, token, required_capability);
             return {false, "", "", 0, 0};
         }
         
-        auto it = issued_tokens_.find(token);
+        std::lock_guard<std::mutex> lock(token_mutex_);
+        auto it = issued_tokens_.find(parsed.token_id);
         if (it == issued_tokens_.end()) {
+            log_validation_failure(TokenValidationFailure::UnknownToken, token, required_capability);
             return {false, "", "", 0, 0};
         }
 
         if (it->second.extension_id != parsed.extension_id) {
+            log_validation_failure(TokenValidationFailure::PayloadTampered, token, required_capability);
+            return {false, "", "", 0, 0};
+        }
+
+        const std::string unsigned_token = build_unsigned_token(parsed.version, parsed.extension_id, parsed.token_id);
+        const std::string expected_signature = compute_signature(unsigned_token, current_signing_key());
+        if (expected_signature != parsed.signature) {
+            log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
             return {false, "", "", 0, 0};
         }
 
@@ -181,6 +272,7 @@ public:
                 std::chrono::system_clock::now().time_since_epoch())
                 .count());
         if (it->second.expires_at > 0 && now > it->second.expires_at) {
+            log_validation_failure(TokenValidationFailure::ExpiredToken, token, required_capability);
             return {false, "", "", 0, 0};  // Token expired
         }
 
@@ -192,6 +284,7 @@ public:
             });
 
         if (matched_capability == it->second.capabilities.end()) {
+            log_validation_failure(TokenValidationFailure::CapabilityMismatch, token, required_capability);
             return {false, "", "", 0, 0};
         }
 
@@ -204,9 +297,12 @@ public:
         if (!is_safe_token_segment(extension_id)) {
             return "";
         }
-        
+
+        std::lock_guard<std::mutex> lock(token_mutex_);
         const auto token_id = std::to_string(next_token_id_++);
-        const std::string token = std::string(kTokenVersion) + "." + extension_id + "." + token_id;
+        const std::string unsigned_token = build_unsigned_token(kTokenVersion, extension_id, token_id);
+        const std::string signature = compute_signature(unsigned_token, current_signing_key());
+        const std::string token = unsigned_token + "." + signature;
         
         const auto now = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -221,20 +317,32 @@ public:
             expiry_seconds > 0 ? static_cast<uint64_t>(now + expiry_seconds) : 0
         };
         
-        issued_tokens_[token] = metadata;
+        issued_tokens_[token_id] = metadata;
         return token;
     }
 
     bool revoke_token(const std::string& token) override {
-        auto it = issued_tokens_.find(token);
-        if (it != issued_tokens_.end()) {
-            issued_tokens_.erase(it);
-            return true;
+        ParsedToken parsed;
+        if (!parse_token(token, parsed)) {
+            return false;
         }
-        return false;
+
+        std::lock_guard<std::mutex> lock(token_mutex_);
+        auto it = issued_tokens_.find(parsed.token_id);
+        if (it == issued_tokens_.end()) {
+            return false;
+        }
+
+        if (it->second.extension_id != parsed.extension_id) {
+            return false;
+        }
+
+        issued_tokens_.erase(it);
+        return true;
     }
 
     std::vector<std::string> get_capabilities(const std::string& extension_id) const override {
+        std::lock_guard<std::mutex> lock(token_mutex_);
         std::set<std::string> unique_capabilities;
         for (const auto& pair : issued_tokens_) {
             if (pair.second.extension_id == extension_id) {
@@ -261,6 +369,7 @@ private:
         uint64_t expires_at;
     };
 
+    mutable std::mutex token_mutex_;
     std::unordered_map<std::string, TokenMetadata> issued_tokens_;
     uint64_t next_token_id_ = 1;
 };
@@ -391,6 +500,16 @@ void initialize_policy_service() {
 
 IPolicyService& get_policy_service_interface() {
     return get_policy_service();
+}
+
+void set_policy_signing_key_for_tests(const std::string& key) {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key = key.empty() ? kDefaultSigningKey : key;
+}
+
+void reset_policy_signing_key_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key = kDefaultSigningKey;
 }
 
 }  // namespace sentinel::services::policy

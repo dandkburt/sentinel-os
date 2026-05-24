@@ -91,4 +91,10 @@ namespace sentinel::services::policy {
 
     /// @brief Initialize the policy service (must be called before use)
     void initialize_policy_service();
+
+    /// @brief Test hook: override signing key used by token issue/verify scaffolding.
+    void set_policy_signing_key_for_tests(const std::string& key);
+
+    /// @brief Test hook: reset signing key back to the default value.
+    void reset_policy_signing_key_for_tests();
 }
