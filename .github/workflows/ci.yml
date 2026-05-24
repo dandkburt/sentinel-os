@@ -7,7 +7,9 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,3 +38,56 @@ jobs:
           if (-not (Test-Path $contract)) {
             throw "Expected staged native contract DLL not found: $contract"
           }
+
+  startup-smoke:
+    runs-on: windows-2025
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Configure
+        run: cmake -S . -B build -DSENTINEL_BUILD_TESTS=ON
+
+      - name: Build native runtime contract
+        run: cmake --build build --config Debug --target sentinel_runtime_contract
+
+      - name: Build managed orchestrator
+        run: dotnet build src/managed/SentinelOS.Orchestration/SentinelOS.Orchestration.csproj -c Debug
+
+      - name: Startup smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = dotnet run --project src/managed/SentinelOS.Orchestration/SentinelOS.Orchestration.csproj -c Debug 2>&1
+          $output | Out-File -FilePath startup-smoke.log -Encoding utf8
+          $output | ForEach-Object { Write-Host $_ }
+
+          $text = ($output -join [Environment]::NewLine)
+
+          if ($text -match "DllNotFound|Failed to locate sentinel_runtime_contract\.dll|EntryPointNotFound") {
+            throw "Startup smoke test detected native runtime load failure signature."
+          }
+
+          if ($text -notmatch "bootstrap event: initialized") {
+            throw "Startup smoke test did not observe runtime initialization event."
+          }
+
+          if ($text -notmatch "Runtime version:\s*0\.1\.0") {
+            throw "Startup smoke test did not observe expected runtime version 0.1.0."
+          }
+
+      - name: Upload startup smoke log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-smoke-log
+          path: startup-smoke.log
+          if-no-files-found: ignore
