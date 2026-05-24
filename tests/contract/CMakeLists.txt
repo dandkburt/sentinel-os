@@ -28,7 +28,11 @@ endif()
 
 add_test(
     NAME RuntimeContractTests
-    COMMAND sentinel_contract_tests
+    COMMAND $<TARGET_FILE:sentinel_contract_tests>
+)
+
+set_tests_properties(RuntimeContractTests PROPERTIES
+    ENVIRONMENT "PATH=$<TARGET_FILE_DIR:sentinel_runtime_contract>;$ENV{PATH}"
 )
 
 set_target_properties(sentinel_contract_tests PROPERTIES
