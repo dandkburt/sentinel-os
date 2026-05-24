@@ -10,6 +10,7 @@ This directory contains the threat model, data classification policy, capability
 
 ## Operational Runbooks
 - `KEY_ROTATION_RUNBOOK.md`: Credential Manager rotation checklist and rollback steps.
+- `CI_READINESS_GATE.md`: manual GitHub Actions readiness gate usage, inputs, and required secrets.
 
 ## Operational Scripts
 - `scripts/Set-PolicyCredentialSecrets.ps1`: write/list/remove policy credential targets.

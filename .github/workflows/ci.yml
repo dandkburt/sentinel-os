@@ -195,6 +195,33 @@ jobs:
             throw "Policy production readiness gate failed."
           }
 
+      - name: Publish readiness summary
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path policy-readiness-result.json)) {
+            "## Policy Readiness Summary`n`nNo readiness result file produced." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+
+          $result = Get-Content policy-readiness-result.json -Raw | ConvertFrom-Json
+
+          "## Policy Readiness Summary" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Provider mode: $($result.providerMode)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Environment: $($result.environment)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "- Overall: $(if ($result.ok) { 'PASS' } else { 'FAIL' })" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "| Check | Status | Detail |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "|---|---|---|" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+          foreach ($check in $result.checks) {
+            $status = if ($check.passed) { "PASS" } else { "FAIL" }
+            "| $($check.name) | $status | $($check.detail) |" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
       - name: Upload readiness result
         if: always()
         uses: actions/upload-artifact@v4
