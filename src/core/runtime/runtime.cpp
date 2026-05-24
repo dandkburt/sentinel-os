@@ -1,6 +1,7 @@
 #include "bootstrap.h"
 #include <unordered_map>
 #include <iostream>
+#include <mutex>
 
 namespace sentinel::core {
 
@@ -48,7 +49,7 @@ public:
     }
 
     void on_lifecycle_event(const std::string& event_name, LifecycleCallback callback) override {
-        // TODO: Implement event subscription with proper thread safety
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
         callbacks_[event_name].push_back(callback);
     }
 
@@ -62,20 +63,27 @@ public:
 
 private:
     void fire_lifecycle_event(const std::string& event_name) {
-        auto it = callbacks_.find(event_name);
-        if (it != callbacks_.end()) {
-            for (const auto& callback : it->second) {
-                try {
-                    callback(event_name);
-                } catch (const std::exception& e) {
-                    std::cerr << "Error in lifecycle callback: " << e.what() << std::endl;
-                }
+        std::vector<LifecycleCallback> event_callbacks;
+        {
+            std::lock_guard<std::mutex> lock(callbacks_mutex_);
+            auto it = callbacks_.find(event_name);
+            if (it != callbacks_.end()) {
+                event_callbacks = it->second;
+            }
+        }
+
+        for (const auto& callback : event_callbacks) {
+            try {
+                callback(event_name);
+            } catch (const std::exception& e) {
+                std::cerr << "Error in lifecycle callback: " << e.what() << std::endl;
             }
         }
     }
 
     bool initialized_;
     std::string version_;
+    std::mutex callbacks_mutex_;
     std::unordered_map<std::string, std::vector<LifecycleCallback>> callbacks_;
 };
 

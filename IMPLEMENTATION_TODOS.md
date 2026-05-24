@@ -29,7 +29,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Event system, subsystem coordination
   - Estimated effort: 1-2 days
 
-- [ ] **TODO**: Implement event subscription with thread safety
+- [x] **DONE**: Implement event subscription with thread safety
   - Location: `BootstrapImpl::on_lifecycle_event()`
   - Task: Add thread-safe callback storage:
     1. Use `std::mutex` for callback list protection
