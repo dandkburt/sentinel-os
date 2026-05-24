@@ -60,3 +60,25 @@ Recommended conventions:
 - Increment rotation numbers monotonically: `k1`, `k2`, `k3`, ...
 - Keep overlap windows short and auditable.
 - Do not reuse old key ids for new key material.
+
+### Credential Manager Provisioning
+
+Use the PowerShell provisioning utility:
+- `scripts/Set-PolicyCredentialSecrets.ps1`
+
+Examples:
+1. Initial write (primary key/id only):
+	- `./scripts/Set-PolicyCredentialSecrets.ps1 -Action set -SigningKey "<secret>" -SigningKeyId "k1"`
+2. Rotation with overlap window:
+	- `./scripts/Set-PolicyCredentialSecrets.ps1 -Action set -SigningKey "<new-secret>" -SigningKeyId "k2" -IncludePrevious -PreviousSigningKey "<old-secret>" -PreviousSigningKeyId "k1"`
+3. Complete cutover (remove previous key/id):
+	- `./scripts/Set-PolicyCredentialSecrets.ps1 -Action set -SigningKey "<new-secret>" -SigningKeyId "k2" -ClearPrevious`
+4. List configured targets (non-secret):
+	- `./scripts/Set-PolicyCredentialSecrets.ps1 -Action list`
+5. Remove all policy credential targets:
+	- `./scripts/Set-PolicyCredentialSecrets.ps1 -Action remove`
+
+Provisioning notes:
+- The script writes generic credentials under `SENTINEL_POLICY_SECRET_TARGET_PREFIX` (default `SentinelOS/Policy`).
+- The script never prints secret values.
+- Keep environment fallback disabled in production unless incident response requires temporary override.
