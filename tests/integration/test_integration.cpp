@@ -143,6 +143,10 @@ TEST(CapabilityWorkflowIntegration, IssueVerifyRevoke) {
     auto result = capability_engine.verify_token(token, "file:read");
     EXPECT_TRUE(result.is_valid);
     EXPECT_EQ(result.extension_id, "test_ext");
+
+    // Verify required capability mismatch is denied
+    auto denied_result = capability_engine.verify_token(token, "network:send");
+    EXPECT_FALSE(denied_result.is_valid);
     
     // Revoke token
     bool revoked = capability_engine.revoke_token(token);
@@ -151,6 +155,19 @@ TEST(CapabilityWorkflowIntegration, IssueVerifyRevoke) {
     // Try to verify revoked token
     auto revoked_result = capability_engine.verify_token(token, "file:read");
     EXPECT_FALSE(revoked_result.is_valid);
+}
+
+TEST(PolicyIntegration, HasPermissionFallsBackToCapabilities) {
+    initialize_policy_service();
+    auto& policy_service = get_policy_service_interface();
+    auto& capability_engine = policy_service.capability_engine();
+
+    std::string extension_id = "permission_ext";
+    std::string token = capability_engine.issue_token(extension_id, {"extension:*"});
+    EXPECT_FALSE(token.empty());
+
+    EXPECT_TRUE(policy_service.has_permission(extension_id, "extension:install"));
+    EXPECT_FALSE(policy_service.has_permission(extension_id, "network:send"));
 }
 
 /// @brief Integration test: Extension isolation workflow

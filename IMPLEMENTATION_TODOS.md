@@ -95,7 +95,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: JSON parser (nlohmann/json or similar)
   - Estimated effort: 1-2 days
 
-- [ ] **TODO**: Check if extension has permission capability
+- [x] **DONE**: Check if extension has permission capability
   - Location: `PolicyServiceImpl::has_permission()`
   - Task: Query extension permissions:
     1. Lookup extension_id in extension_permissions_ map

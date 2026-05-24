@@ -2,8 +2,35 @@
 #include <unordered_map>
 #include <iostream>
 #include <chrono>
+#include <algorithm>
+#include <set>
 
 namespace sentinel::services::policy {
+
+namespace {
+bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
+    if (granted_capability == "*") {
+        return true;
+    }
+
+    if (granted_capability == required_capability) {
+        return true;
+    }
+
+    const auto wildcard_pos = granted_capability.find(':');
+    if (wildcard_pos != std::string::npos &&
+        wildcard_pos + 1 < granted_capability.size() &&
+        granted_capability[wildcard_pos + 1] == '*') {
+        const auto granted_prefix = granted_capability.substr(0, wildcard_pos);
+        const auto required_sep = required_capability.find(':');
+        if (required_sep != std::string::npos) {
+            return required_capability.substr(0, required_sep) == granted_prefix;
+        }
+    }
+
+    return false;
+}
+}  // namespace
 
 /// @brief Default capability engine implementation
 class CapabilityEngineImpl : public ICapabilityEngine {
@@ -19,13 +46,26 @@ public:
             return {false, "", "", 0, 0};
         }
 
-        auto now = std::chrono::system_clock::now().time_since_epoch().count() / 1000000000;
+        const auto now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
         if (it->second.expires_at > 0 && now > it->second.expires_at) {
             return {false, "", "", 0, 0};  // Token expired
         }
 
-        // TODO: Implement capability scope matching
-        return {true, it->second.extension_id, it->second.capability_scope, 
+        auto matched_capability = std::find_if(
+            it->second.capabilities.begin(),
+            it->second.capabilities.end(),
+            [&required_capability](const std::string& granted) {
+                return capability_matches(granted, required_capability);
+            });
+
+        if (matched_capability == it->second.capabilities.end()) {
+            return {false, "", "", 0, 0};
+        }
+
+        return {true, it->second.extension_id, *matched_capability,
                 it->second.issued_at, it->second.expires_at};
     }
 
@@ -38,11 +78,16 @@ public:
         
         std::string token = "token_" + extension_id + "_" + std::to_string(issued_tokens_.size());
         
-        auto now = std::chrono::system_clock::now().time_since_epoch().count() / 1000000000;
+        const auto now = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        std::vector<std::string> granted_capabilities = capabilities.empty() ? std::vector<std::string>{"*"} : capabilities;
+
         TokenMetadata metadata{
             extension_id,
-            capabilities.empty() ? "*" : capabilities[0],  // Simplified scope
-            static_cast<uint64_t>(now),
+            std::move(granted_capabilities),
+            now,
             expiry_seconds > 0 ? static_cast<uint64_t>(now + expiry_seconds) : 0
         };
         
@@ -60,20 +105,28 @@ public:
     }
 
     std::vector<std::string> get_capabilities(const std::string& extension_id) const override {
-        // TODO: Query all valid tokens for extension and collect capabilities
-        std::vector<std::string> result;
+        std::set<std::string> unique_capabilities;
         for (const auto& pair : issued_tokens_) {
             if (pair.second.extension_id == extension_id) {
-                result.push_back(pair.second.capability_scope);
+                for (const auto& capability : pair.second.capabilities) {
+                    unique_capabilities.insert(capability);
+                }
             }
         }
+
+        std::vector<std::string> result;
+        result.reserve(unique_capabilities.size());
+        for (const auto& capability : unique_capabilities) {
+            result.push_back(capability);
+        }
+
         return result;
     }
 
 private:
     struct TokenMetadata {
         std::string extension_id;
-        std::string capability_scope;
+        std::vector<std::string> capabilities;
         uint64_t issued_at;
         uint64_t expires_at;
     };
@@ -93,6 +146,10 @@ public:
         // - Match action against rules
         // - Evaluate conditions
         // - Return decision
+
+        (void)requester_id;
+        (void)resource_id;
+        (void)context;
         
         auto it = rules_.find(action);
         if (it != rules_.end()) {
@@ -115,11 +172,23 @@ public:
     }
 
     bool has_permission(const std::string& extension_id, const std::string& permission) const override {
-        // TODO: Check if extension has permission capability
+        // Fast path: explicit permission table.
         auto it = extension_permissions_.find(extension_id);
         if (it != extension_permissions_.end()) {
-            return it->second.find(permission) != it->second.end();
+            auto permission_it = it->second.find(permission);
+            if (permission_it != it->second.end() && permission_it->second) {
+                return true;
+            }
         }
+
+        // Fallback: derive effective permission from capability grants.
+        const auto capabilities = capability_engine_->get_capabilities(extension_id);
+        for (const auto& capability : capabilities) {
+            if (capability_matches(capability, permission)) {
+                return true;
+            }
+        }
+
         return false;
     }
 
