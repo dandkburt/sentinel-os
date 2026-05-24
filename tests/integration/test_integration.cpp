@@ -128,6 +128,30 @@ TEST(DesktopShellIntegration, DesktopShellInitialization) {
     EXPECT_EQ(retrieved.title, "Test Window");
     EXPECT_EQ(retrieved.width, 800);
     EXPECT_EQ(retrieved.height, 600);
+
+    EXPECT_TRUE(wm.bring_to_front(window_id));
+    EXPECT_FALSE(wm.bring_to_front("missing_window"));
+
+    EXPECT_TRUE(shell.set_active_taskbar_item(window_id));
+    EXPECT_FALSE(shell.set_active_taskbar_item("missing_window"));
+
+    auto notif_id = shell.show_notification("Build", "Desktop shell notification", 1500);
+    EXPECT_FALSE(notif_id.empty());
+}
+
+TEST(DesktopShellIntegration, ShutdownClearsWindowResources) {
+    initialize_desktop_shell();
+    auto& shell = get_desktop_shell_interface();
+    auto& wm = shell.window_manager();
+
+    ASSERT_TRUE(shell.initialize());
+    WindowProperties props{"", "Resource Window", 0, 0, 320, 240, WindowState::Normal, true, false, "cleanup_ext"};
+    auto window_id = wm.create_window(props);
+    ASSERT_FALSE(window_id.empty());
+    ASSERT_EQ(wm.list_windows("cleanup_ext").size(), 1);
+
+    EXPECT_TRUE(shell.shutdown());
+    EXPECT_TRUE(wm.list_windows("cleanup_ext").empty());
 }
 
 /// @brief Integration test: Runtime subsystem registration

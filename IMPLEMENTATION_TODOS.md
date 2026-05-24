@@ -176,7 +176,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Platform-specific window APIs
   - Estimated effort: 2-3 days
 
-- [ ] **TODO**: Release native window resource
+- [x] **DONE**: Release native window resource
   - Location: `WindowManagerImpl::destroy_window()`
   - Task: Cleanup window:
     1. Lookup window in windows_ map
@@ -187,7 +187,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Platform window APIs, cleanup logic
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Register event callback with proper thread safety
+- [x] **DONE**: Register event callback with proper thread safety
   - Location: `WindowManagerImpl::on_window_event()`
   - Task: Add event subscription with synchronization:
     1. Use mutex to protect window_callbacks_ map
@@ -208,7 +208,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Platform-specific window system APIs
   - Estimated effort: 3-4 days
 
-- [ ] **TODO**: Cleanup window system resources
+- [x] **DONE**: Cleanup window system resources
   - Location: `DesktopShellImpl::shutdown()`
   - Task: Release all window system resources:
     1. Close all windows
@@ -219,7 +219,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Window system cleanup APIs
   - Estimated effort: 2 days
 
-- [ ] **TODO**: Highlight window in taskbar
+- [x] **DONE**: Highlight window in taskbar
   - Location: `DesktopShellImpl::set_active_taskbar_item()`
   - Task: Update taskbar appearance:
     1. Lookup window by window_id
@@ -230,7 +230,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Taskbar APIs
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Show native desktop notification
+- [x] **DONE**: Show native desktop notification
   - Location: `DesktopShellImpl::show_notification()`
   - Task: Display desktop notification:
     1. Call platform notification API (WinToast on Windows, dbus on Linux)
@@ -241,7 +241,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Platform notification APIs
   - Estimated effort: 1-2 days
 
-- [ ] **TODO**: Implement Z-order manipulation
+- [x] **DONE**: Implement Z-order manipulation
   - Location: `WindowManagerImpl::bring_to_front()`
   - Task: Change window Z-order:
     1. Lookup window by window_id
