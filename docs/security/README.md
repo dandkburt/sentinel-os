@@ -16,6 +16,7 @@ This directory contains the threat model, data classification policy, capability
 ## Operational Scripts
 - `scripts/Set-PolicyCredentialSecrets.ps1`: write/list/remove policy credential targets.
 - `scripts/Test-PolicySecretProviderReadiness.ps1`: preflight validation for provider mode, credential targets, and production-safe fallback settings.
+- `scripts/Set-GitHubBranchProtection.ps1`: apply branch protection required checks and review settings via `gh` API.
 
 ## Capability Token Signing Key Id (kid) Policy
 
