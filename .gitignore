@@ -1,0 +1,24 @@
+# Build outputs
+/build/
+/out/
+/bin/
+/obj/
+/.vs/
+/.vscode/
+
+# CMake
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+# Test and coverage artifacts
+*.log
+*.tmp
+*.coverage
+*.gcda
+*.gcno
+
+# OS files
+Thumbs.db
+Desktop.ini

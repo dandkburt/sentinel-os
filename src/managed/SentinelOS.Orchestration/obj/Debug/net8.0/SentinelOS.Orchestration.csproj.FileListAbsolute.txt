@@ -1,0 +1,14 @@
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.AssemblyInfoInputs.cache
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.AssemblyInfo.cs
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.csproj.CoreCompileInputs.cache
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\bin\Debug\net8.0\SentinelOS.Orchestration.exe
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\bin\Debug\net8.0\SentinelOS.Orchestration.deps.json
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\bin\Debug\net8.0\SentinelOS.Orchestration.runtimeconfig.json
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\bin\Debug\net8.0\SentinelOS.Orchestration.dll
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\bin\Debug\net8.0\SentinelOS.Orchestration.pdb
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.dll
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\refint\SentinelOS.Orchestration.dll
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.pdb
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\SentinelOS.Orchestration.genruntimeconfig.cache
+C:\Users\dandk\Desktop\sentinel-os\src\managed\SentinelOS.Orchestration\obj\Debug\net8.0\ref\SentinelOS.Orchestration.dll

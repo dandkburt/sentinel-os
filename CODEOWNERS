@@ -1,0 +1,7 @@
+* @owner
+
+/src/core/ @owner
+/src/services/ @owner
+/src/shell/ @owner
+/src/intelligence/ @owner
+/docs/security/ @owner

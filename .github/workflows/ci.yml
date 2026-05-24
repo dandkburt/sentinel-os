@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Configure
+        run: cmake -S . -B build -DSENTINEL_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Debug
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Debug
+
+      - name: Build managed orchestrator
+        run: dotnet build src/managed/SentinelOS.Orchestration/SentinelOS.Orchestration.csproj -c Debug
+
+      - name: Verify staged native contract
+        shell: pwsh
+        run: |
+          $contract = "src/managed/SentinelOS.Orchestration/bin/Debug/net8.0/sentinel_runtime_contract.dll"
+          if (-not (Test-Path $contract)) {
+            throw "Expected staged native contract DLL not found: $contract"
+          }
