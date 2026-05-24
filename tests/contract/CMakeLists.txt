@@ -32,7 +32,7 @@ add_test(
 )
 
 set_tests_properties(RuntimeContractTests PROPERTIES
-    ENVIRONMENT "PATH=$<TARGET_FILE_DIR:sentinel_runtime_contract>;$ENV{PATH}"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:sentinel_runtime_contract>"
 )
 
 set_target_properties(sentinel_contract_tests PROPERTIES

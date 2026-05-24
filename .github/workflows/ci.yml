@@ -26,7 +26,21 @@ jobs:
         run: cmake --build build --config Debug
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure -C Debug
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          ctest --test-dir build --output-on-failure -C Debug -V 2>&1 | Tee-Object -FilePath ctest.log
+          if ($LASTEXITCODE -ne 0) {
+            throw "CTest failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload ctest log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-log
+          path: ctest.log
+          if-no-files-found: ignore
 
       - name: Build managed orchestrator
         run: dotnet build src/managed/SentinelOS.Orchestration/SentinelOS.Orchestration.csproj -c Debug
