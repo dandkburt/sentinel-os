@@ -8,6 +8,9 @@ This directory contains the threat model, data classification policy, capability
 - Consent and approval model
 - Security testing strategy
 
+## Operational Runbooks
+- `KEY_ROTATION_RUNBOOK.md`: Credential Manager rotation checklist and rollback steps.
+
 ## Capability Token Signing Key Id (kid) Policy
 
 Capability tokens use a 4-segment format:
