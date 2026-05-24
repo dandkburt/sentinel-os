@@ -118,7 +118,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Quota definition validation
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Cleanup namespace and reclaim resources
+- [x] **DONE**: Cleanup namespace and reclaim resources
   - Location: `NamespaceManagerImpl::remove_namespace()`
   - Task: Release namespace resources:
     1. Check if namespace exists
@@ -129,7 +129,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Entry cleanup procedures
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Validate entry and check namespace quota
+- [x] **DONE**: Validate entry and check namespace quota
   - Location: `NamespaceManagerImpl::add_entry()`
   - Task: Add entry with validation:
     1. Check namespace exists
@@ -141,7 +141,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Quota checking logic
   - Estimated effort: 1-2 days
 
-- [ ] **TODO**: Collect current resource usage metrics
+- [x] **DONE**: Collect current resource usage metrics
   - Location: `NamespaceManagerImpl::get_resource_usage()`
   - Task: Calculate namespace resource usage:
     1. Sum memory usage of all entries
@@ -152,7 +152,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Resource tracking mechanisms
   - Estimated effort: 1-2 days
 
-- [ ] **TODO**: Validate new quota against current usage and apply
+- [x] **DONE**: Validate new quota against current usage and apply
   - Location: `NamespaceManagerImpl::set_resource_quota()`
   - Task: Update quotas with validation:
     1. Get current resource usage

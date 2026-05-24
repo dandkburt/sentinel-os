@@ -49,6 +49,46 @@ TEST(NamespaceIntegration, NamespaceServiceInitialization) {
     EXPECT_EQ(entries[0].path, "/files");
 }
 
+TEST(NamespaceIntegration, RejectInvalidPathOrOwnerAndEnforceQuota) {
+    initialize_namespace_service();
+    auto& namespace_mgr = get_namespace_manager_interface();
+
+    ResourceQuota quota{8192, 1, 1, 1};
+    ASSERT_TRUE(namespace_mgr.create_namespace("quota_ns", "ext_owner", quota));
+
+    NamespaceEntry bad_path{"files/no_root", NamespaceType::File, "ext_owner", true};
+    EXPECT_FALSE(namespace_mgr.add_entry("quota_ns", bad_path));
+
+    NamespaceEntry bad_owner{"/files/a", NamespaceType::File, "other_owner", true};
+    EXPECT_FALSE(namespace_mgr.add_entry("quota_ns", bad_owner));
+
+    NamespaceEntry file1{"/files/a", NamespaceType::File, "ext_owner", true};
+    EXPECT_TRUE(namespace_mgr.add_entry("quota_ns", file1));
+
+    NamespaceEntry file2{"/files/b", NamespaceType::File, "ext_owner", true};
+    EXPECT_FALSE(namespace_mgr.add_entry("quota_ns", file2));
+}
+
+TEST(NamespaceIntegration, RejectQuotaThatIsBelowCurrentUsage) {
+    initialize_namespace_service();
+    auto& namespace_mgr = get_namespace_manager_interface();
+
+    ResourceQuota initial_quota{16384, 4, 4, 4};
+    ASSERT_TRUE(namespace_mgr.create_namespace("quota_update_ns", "ext_owner_2", initial_quota));
+
+    NamespaceEntry entry{"/socket/a", NamespaceType::Socket, "ext_owner_2", true};
+    ASSERT_TRUE(namespace_mgr.add_entry("quota_update_ns", entry));
+
+    ResourceQuota invalid_quota{1024, 4, 4, 0};
+    EXPECT_FALSE(namespace_mgr.set_resource_quota("quota_update_ns", invalid_quota));
+
+    ResourceQuota valid_quota{16384, 4, 4, 4};
+    EXPECT_TRUE(namespace_mgr.set_resource_quota("quota_update_ns", valid_quota));
+
+    auto usage = namespace_mgr.get_resource_usage("quota_update_ns");
+    EXPECT_EQ(usage["network_connections"], 1);
+}
+
 /// @brief Integration test: Policy service is initialized
 TEST(PolicyIntegration, PolicyServiceInitialization) {
     initialize_policy_service();
