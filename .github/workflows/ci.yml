@@ -84,6 +84,8 @@ jobs:
           $output | Out-File -FilePath startup-smoke.log -Encoding utf8
           $output | ForEach-Object { Write-Host $_ }
 
+          throw "Intentional failure for startup-smoke artifact regression drill"
+
           $text = ($output -join [Environment]::NewLine)
 
           if ($text -match "DllNotFound|Failed to locate sentinel_runtime_contract\.dll|EntryPointNotFound") {
