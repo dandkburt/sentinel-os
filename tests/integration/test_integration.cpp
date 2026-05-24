@@ -3,6 +3,7 @@
 #include "policy.h"
 #include "namespace.h"
 #include "shell.h"
+#include <cstdint>
 
 using namespace sentinel::core;
 using namespace sentinel::services::policy;
@@ -92,11 +93,13 @@ TEST(DesktopShellIntegration, DesktopShellInitialization) {
 /// @brief Integration test: Runtime subsystem registration
 TEST(RuntimeIntegration, SubsystemRegistration) {
     initialize_runtime();
+    initialize_policy_service();
     auto& runtime = get_runtime_interface();
+    auto& policy_service = get_policy_service_interface();
     
     // Subsystems can be registered with the runtime
     // Create a mock subsystem pointer
-    void* mock_subsystem = reinterpret_cast<void*>(0xDEADBEEF);
+    void* mock_subsystem = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0xDEADBEEF));
     
     // Register the subsystem
     bool registered = runtime.register_subsystem("test_subsystem", mock_subsystem);
@@ -107,9 +110,23 @@ TEST(RuntimeIntegration, SubsystemRegistration) {
     EXPECT_EQ(subsystems.size(), 1);
     EXPECT_EQ(subsystems[0], "test_subsystem");
     
-    // Verify we can retrieve it
-    void* retrieved = runtime.get_subsystem("test_subsystem", "");
+    std::string token = policy_service.capability_engine().issue_token("runtime_test", {"test_subsystem:access"});
+    EXPECT_FALSE(token.empty());
+
+    // Verify we can retrieve it with a valid capability request
+    void* retrieved = runtime.get_subsystem("test_subsystem", token + "|test_subsystem:access");
     EXPECT_EQ(retrieved, mock_subsystem);
+}
+
+TEST(RuntimeIntegration, SubsystemRegistrationDeniedWithoutValidToken) {
+    initialize_runtime();
+    auto& runtime = get_runtime_interface();
+
+    void* mock_subsystem = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0xBEEFDEAD));
+    ASSERT_TRUE(runtime.register_subsystem("secured_subsystem", mock_subsystem));
+
+    void* retrieved = runtime.get_subsystem("secured_subsystem", "invalid_token|secured_subsystem:access");
+    EXPECT_EQ(retrieved, nullptr);
 }
 
 /// @brief Integration test: Capability token workflow

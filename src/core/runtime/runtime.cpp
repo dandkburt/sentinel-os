@@ -1,4 +1,5 @@
 #include "bootstrap.h"
+#include "../../services/policy/policy.h"
 #include <unordered_map>
 #include <iostream>
 #include <mutex>
@@ -6,6 +7,30 @@
 #include <chrono>
 
 namespace sentinel::core {
+
+namespace {
+struct ParsedCapability {
+    std::string token;
+    std::string required_capability;
+};
+
+ParsedCapability parse_capability_request(const std::string& subsystem_name, const std::string& capability_input) {
+    ParsedCapability parsed{};
+    const auto sep = capability_input.find('|');
+    if (sep == std::string::npos) {
+        parsed.token = capability_input;
+        parsed.required_capability = subsystem_name + ":access";
+        return parsed;
+    }
+
+    parsed.token = capability_input.substr(0, sep);
+    parsed.required_capability = capability_input.substr(sep + 1);
+    if (parsed.required_capability.empty()) {
+        parsed.required_capability = subsystem_name + ":access";
+    }
+    return parsed;
+}
+}  // namespace
 
 /// @brief Default bootstrap implementation
 class BootstrapImpl : public IBootstrap {
@@ -118,13 +143,25 @@ public:
     }
 
     void* get_subsystem(const std::string& subsystem_name, const std::string& capability) override {
-        (void)capability;
-        // TODO: Verify capability before returning subsystem
         auto it = subsystems_.find(subsystem_name);
-        if (it != subsystems_.end()) {
-            return it->second;
+        if (it == subsystems_.end()) {
+            return nullptr;
         }
-        return nullptr;
+
+        const auto request = parse_capability_request(subsystem_name, capability);
+        if (request.token.empty()) {
+            std::cerr << "Capability denied for subsystem '" << subsystem_name << "': empty token" << std::endl;
+            return nullptr;
+        }
+
+        auto& policy_service = sentinel::services::policy::get_policy_service_interface();
+        const auto verification = policy_service.capability_engine().verify_token(request.token, request.required_capability);
+        if (!verification.is_valid) {
+            std::cerr << "Capability denied for subsystem '" << subsystem_name << "': token validation failed" << std::endl;
+            return nullptr;
+        }
+
+        return it->second;
     }
 
     bool register_subsystem(const std::string& subsystem_name, void* subsystem_ptr) override {

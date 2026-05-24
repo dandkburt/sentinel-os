@@ -39,7 +39,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: C++ standard library synchronization primitives
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Verify capability before returning subsystem
+- [x] **DONE**: Verify capability before returning subsystem
   - Location: `RuntimeImpl::get_subsystem()`
   - Task: Integrate with capability engine:
     1. Parse capability string format
