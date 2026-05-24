@@ -4,8 +4,56 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      provider_mode:
+        description: Policy secret provider mode to validate
+        required: true
+        default: credential-manager
+        type: choice
+        options:
+          - auto
+          - credential-manager
+          - dpapi-file
+          - env
+      require_previous:
+        description: Require previous-key material for overlap window validation
+        required: true
+        default: false
+        type: boolean
+      secret_target_prefix:
+        description: Credential Manager target prefix (credential-manager mode)
+        required: false
+        default: SentinelOS/Policy
+        type: string
+      secret_file:
+        description: DPAPI secret file path (dpapi-file mode)
+        required: false
+        default: C:\ProgramData\SentinelOS\policy_secrets.dpapi
+        type: string
 
 jobs:
+  policy-readiness-script-smoke:
+    runs-on: windows-2025
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate readiness script in devtest mode
+        shell: pwsh
+        env:
+          SENTINEL_POLICY_SIGNING_KEY: ci-devtest-signing-key-123456
+          SENTINEL_POLICY_SIGNING_KEY_ID: k1
+        run: |
+          $ErrorActionPreference = "Stop"
+          $json = ./scripts/Test-PolicySecretProviderReadiness.ps1 -ProviderMode env -Environment devtest -OutputJson
+          $result = $json | ConvertFrom-Json
+          if (-not $result.ok) {
+            throw "Policy readiness script smoke validation failed."
+          }
+
   build:
     runs-on: windows-2025
     env:
@@ -104,4 +152,53 @@ jobs:
         with:
           name: startup-smoke-log
           path: startup-smoke.log
+          if-no-files-found: ignore
+
+  policy-production-readiness-gate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-2025
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      SENTINEL_POLICY_SECRET_PROVIDER: ${{ inputs.provider_mode }}
+      SENTINEL_POLICY_ALLOW_ENV_FALLBACK: ""
+      SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY: ""
+      SENTINEL_POLICY_SECRET_TARGET_PREFIX: ${{ inputs.secret_target_prefix }}
+      SENTINEL_POLICY_SECRET_FILE: ${{ inputs.secret_file }}
+      SENTINEL_POLICY_SIGNING_KEY: ${{ secrets.POLICY_SIGNING_KEY }}
+      SENTINEL_POLICY_SIGNING_KEY_ID: ${{ secrets.POLICY_SIGNING_KEY_ID }}
+      SENTINEL_POLICY_PREVIOUS_SIGNING_KEY: ${{ secrets.POLICY_PREVIOUS_SIGNING_KEY }}
+      SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID: ${{ secrets.POLICY_PREVIOUS_SIGNING_KEY_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run policy readiness gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $args = @(
+            "-ProviderMode", "${{ inputs.provider_mode }}",
+            "-Environment", "production"
+          )
+
+          if ("${{ inputs.require_previous }}" -eq "true") {
+            $args += "-RequirePrevious"
+          }
+
+          $args += "-OutputJson"
+
+          $json = ./scripts/Test-PolicySecretProviderReadiness.ps1 @args
+          $json | Out-File -FilePath policy-readiness-result.json -Encoding utf8
+          $result = $json | ConvertFrom-Json
+
+          if (-not $result.ok) {
+            throw "Policy production readiness gate failed."
+          }
+
+      - name: Upload readiness result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-readiness-result
+          path: policy-readiness-result.json
           if-no-files-found: ignore
