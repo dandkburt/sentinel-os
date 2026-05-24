@@ -15,6 +15,17 @@ target_include_directories(sentinel_contract_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/core/runtime
 )
 
+if(WIN32)
+    # Ensure shared-library runtime dependencies (including sentinel_runtime_contract.dll)
+    # are present beside the test executable when launched by ctest.
+    add_custom_command(TARGET sentinel_contract_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:sentinel_contract_tests>
+            $<TARGET_FILE_DIR:sentinel_contract_tests>
+        COMMAND_EXPAND_LISTS
+    )
+endif()
+
 add_test(
     NAME RuntimeContractTests
     COMMAND sentinel_contract_tests
