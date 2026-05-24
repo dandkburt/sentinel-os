@@ -229,3 +229,17 @@ jobs:
           name: policy-readiness-result
           path: policy-readiness-result.json
           if-no-files-found: ignore
+
+  production-promotion:
+    if: github.event_name == 'workflow_dispatch'
+    needs:
+      - policy-production-readiness-gate
+    runs-on: windows-2025
+    environment:
+      name: production
+    steps:
+      - name: Promotion gate
+        shell: pwsh
+        run: |
+          Write-Host "Production promotion gate satisfied."
+          Write-Host "Policy readiness checks passed and environment protections may proceed."
