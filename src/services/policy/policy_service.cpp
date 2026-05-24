@@ -530,8 +530,8 @@ public:
             } else if (parsed.key_id == previous_key_id && !previous_key.empty()) {
                 signature_valid = (compute_signature(unsigned_token, previous_key) == parsed.signature);
             } else {
-                signature_valid = (compute_signature(unsigned_token, current_key) == parsed.signature) ||
-                                  (!previous_key.empty() && compute_signature(unsigned_token, previous_key) == parsed.signature);
+                log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
+                return {false, "", "", 0, 0};
             }
         } else {
             signature_valid = (compute_signature(unsigned_token, current_key) == parsed.signature) ||

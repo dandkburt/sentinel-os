@@ -383,6 +383,31 @@ TEST(PolicyCapabilityEngineReal, KeyIdRoutesVerificationToPreviousKey) {
     reset_policy_signing_key_ids_for_tests();
 }
 
+TEST(PolicyCapabilityEngineReal, UnknownExplicitKeyIdIsRejected) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_key_for_tests("stable-routing-signing-key-123");
+    set_policy_signing_key_id_for_tests("kid_mystery");
+
+    const auto extension_id = unique_extension_id("kid_unknown");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    // Reclassify configured ids so token carries an explicit, unknown key id at verify time.
+    set_policy_signing_key_id_for_tests("kid_current");
+    set_policy_previous_signing_key_id_for_tests("kid_previous");
+
+    auto verify = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(verify.is_valid);
+
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
 TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
     initialize_policy_service();
     auto& capability_engine = get_policy_service_interface().capability_engine();
