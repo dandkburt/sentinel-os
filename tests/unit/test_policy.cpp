@@ -331,6 +331,7 @@ TEST(PolicyCapabilityEngineReal, DualKeyVerifyWindowSupportsCutover) {
     initialize_policy_service();
     reset_policy_signing_key_for_tests();
     reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
     auto& capability_engine = get_policy_service_interface().capability_engine();
 
     set_policy_signing_key_for_tests("old-rotation-signing-key-123");
@@ -349,6 +350,37 @@ TEST(PolicyCapabilityEngineReal, DualKeyVerifyWindowSupportsCutover) {
     EXPECT_FALSE(after_cutover.is_valid);
 
     reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, KeyIdRoutesVerificationToPreviousKey) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_key_for_tests("old-routing-signing-key-123");
+    set_policy_signing_key_id_for_tests("kid_old");
+
+    const auto extension_id = unique_extension_id("kid_route");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    set_policy_signing_key_for_tests("new-routing-signing-key-456");
+    set_policy_signing_key_id_for_tests("kid_new");
+    set_policy_previous_signing_key_for_tests("old-routing-signing-key-123");
+    set_policy_previous_signing_key_id_for_tests("kid_old");
+
+    auto verify_with_previous = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(verify_with_previous.is_valid);
+
+    reset_policy_previous_signing_key_for_tests();
+    auto verify_without_previous = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(verify_without_previous.is_valid);
+
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
 }
 
 TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
@@ -377,6 +409,9 @@ TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
 
     _putenv("SENTINEL_POLICY_SIGNING_KEY=");
     _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY=");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
+    _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID=");
     reset_policy_signing_key_for_tests();
     reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
 }

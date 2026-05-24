@@ -104,6 +104,15 @@ namespace sentinel::services::policy {
     /// @brief Test hook: reset previous verification key.
     void reset_policy_previous_signing_key_for_tests();
 
+    /// @brief Test hook: override current signing key identifier used in tokenId formatting.
+    void set_policy_signing_key_id_for_tests(const std::string& key_id);
+
+    /// @brief Test hook: override previous signing key identifier for dual-key verify routing.
+    void set_policy_previous_signing_key_id_for_tests(const std::string& key_id);
+
+    /// @brief Test hook: reset signing key identifiers to defaults.
+    void reset_policy_signing_key_ids_for_tests();
+
     /// @brief Test hook: compute HMAC-SHA256 hex signature for deterministic unit tests.
     std::string compute_policy_hmac_for_tests(const std::string& message);
 

@@ -17,10 +17,14 @@ namespace sentinel::services::policy {
 namespace {
 constexpr const char* kTokenVersion = "v1";
 constexpr const char* kDefaultSigningKey = "sentinel-policy-dev-key";
+constexpr const char* kDefaultSigningKeyId = "k1";
+constexpr const char* kDefaultPreviousSigningKeyId = "k0";
 constexpr size_t kMinimumSigningKeyLength = 16;
 std::mutex g_signing_key_mutex;
 std::string g_signing_key = kDefaultSigningKey;
 std::string g_previous_signing_key;
+std::string g_signing_key_id = kDefaultSigningKeyId;
+std::string g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -134,6 +138,16 @@ std::string current_previous_signing_key() {
     return g_previous_signing_key;
 }
 
+std::string current_signing_key_id() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    return g_signing_key_id;
+}
+
+std::string current_previous_signing_key_id() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    return g_previous_signing_key_id;
+}
+
 bool is_valid_signing_key_material(const std::string& key) {
     if (key.size() < kMinimumSigningKeyLength) {
         return false;
@@ -168,6 +182,8 @@ std::string read_env_var(const char* name) {
 void apply_signing_keys_from_environment() {
     const std::string primary_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY");
     const std::string previous_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY");
+    const std::string primary_key_id_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY_ID");
+    const std::string previous_key_id_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID");
 
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
 
@@ -187,6 +203,22 @@ void apply_signing_keys_from_environment() {
         } else {
             std::cerr << "Policy previous signing key from environment failed validation; disabling previous key." << std::endl;
             g_previous_signing_key.clear();
+        }
+    }
+
+    if (!primary_key_id_env.empty()) {
+        if (is_safe_token_segment(primary_key_id_env)) {
+            g_signing_key_id = primary_key_id_env;
+        } else {
+            std::cerr << "Policy signing key id from environment failed validation; keeping existing id." << std::endl;
+        }
+    }
+
+    if (!previous_key_id_env.empty()) {
+        if (is_safe_token_segment(previous_key_id_env)) {
+            g_previous_signing_key_id = previous_key_id_env;
+        } else {
+            std::cerr << "Policy previous signing key id from environment failed validation; keeping existing id." << std::endl;
         }
     }
 }
@@ -382,15 +414,25 @@ void log_validation_failure(TokenValidationFailure failure,
                             const std::string& required_capability) {
     (void)token;
     std::cerr << "Token validation failed [" << to_string(failure)
-              << "' required='" << required_capability << "'" << std::endl;
+              << "] required='" << required_capability << "'" << std::endl;
 }
 
 struct ParsedToken {
     std::string version;
     std::string extension_id;
     std::string token_id;
+    std::string key_id;
     std::string signature;
 };
+
+void parse_token_id_fields(ParsedToken& token) {
+    const auto separator = token.token_id.find('-');
+    if (separator == std::string::npos) {
+        token.key_id.clear();
+        return;
+    }
+    token.key_id = token.token_id.substr(0, separator);
+}
 
 bool parse_token(const std::string& token, ParsedToken& out) {
     if (token.empty()) {
@@ -434,6 +476,8 @@ bool parse_token(const std::string& token, ParsedToken& out) {
         return false;
     }
 
+    parse_token_id_fields(out);
+
     return true;
 }
 }  // namespace
@@ -466,13 +510,30 @@ public:
         }
 
         const std::string unsigned_token = build_unsigned_token(parsed.version, parsed.extension_id, parsed.token_id);
-        const std::string expected_signature = compute_signature(unsigned_token, current_signing_key());
-        if (expected_signature != parsed.signature) {
-            const std::string previous_key = current_previous_signing_key();
-            if (previous_key.empty() || compute_signature(unsigned_token, previous_key) != parsed.signature) {
-                log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
-                return {false, "", "", 0, 0};
+        const std::string current_key = current_signing_key();
+        const std::string previous_key = current_previous_signing_key();
+        const std::string current_key_id = current_signing_key_id();
+        const std::string previous_key_id = current_previous_signing_key_id();
+
+        bool signature_valid = false;
+        if (!parsed.key_id.empty()) {
+            if (parsed.key_id == current_key_id) {
+                signature_valid = (compute_signature(unsigned_token, current_key) == parsed.signature) ||
+                                  (!previous_key.empty() && compute_signature(unsigned_token, previous_key) == parsed.signature);
+            } else if (parsed.key_id == previous_key_id && !previous_key.empty()) {
+                signature_valid = (compute_signature(unsigned_token, previous_key) == parsed.signature);
+            } else {
+                signature_valid = (compute_signature(unsigned_token, current_key) == parsed.signature) ||
+                                  (!previous_key.empty() && compute_signature(unsigned_token, previous_key) == parsed.signature);
             }
+        } else {
+            signature_valid = (compute_signature(unsigned_token, current_key) == parsed.signature) ||
+                              (!previous_key.empty() && compute_signature(unsigned_token, previous_key) == parsed.signature);
+        }
+
+        if (!signature_valid) {
+            log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
+            return {false, "", "", 0, 0};
         }
 
         const auto now = static_cast<uint64_t>(
@@ -507,7 +568,7 @@ public:
         }
 
         std::lock_guard<std::mutex> lock(token_mutex_);
-        const auto token_id = std::to_string(next_token_id_++);
+        const std::string token_id = current_signing_key_id() + "-" + std::to_string(next_token_id_++);
         const std::string unsigned_token = build_unsigned_token(kTokenVersion, extension_id, token_id);
         const std::string signature = compute_signature(unsigned_token, current_signing_key());
         const std::string token = unsigned_token + "." + signature;
@@ -729,6 +790,28 @@ void set_policy_previous_signing_key_for_tests(const std::string& key) {
 void reset_policy_previous_signing_key_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
     g_previous_signing_key.clear();
+}
+
+void set_policy_signing_key_id_for_tests(const std::string& key_id) {
+    if (key_id.empty() || !is_safe_token_segment(key_id)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key_id = key_id;
+}
+
+void set_policy_previous_signing_key_id_for_tests(const std::string& key_id) {
+    if (key_id.empty() || !is_safe_token_segment(key_id)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_previous_signing_key_id = key_id;
+}
+
+void reset_policy_signing_key_ids_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key_id = kDefaultSigningKeyId;
+    g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
 }
 
 std::string compute_policy_hmac_for_tests(const std::string& message) {
