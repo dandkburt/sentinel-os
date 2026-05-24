@@ -11,6 +11,10 @@ This directory contains the threat model, data classification policy, capability
 ## Operational Runbooks
 - `KEY_ROTATION_RUNBOOK.md`: Credential Manager rotation checklist and rollback steps.
 
+## Operational Scripts
+- `scripts/Set-PolicyCredentialSecrets.ps1`: write/list/remove policy credential targets.
+- `scripts/Test-PolicySecretProviderReadiness.ps1`: preflight validation for provider mode, credential targets, and production-safe fallback settings.
+
 ## Capability Token Signing Key Id (kid) Policy
 
 Capability tokens use a 4-segment format:

@@ -23,7 +23,13 @@ Provisioning utility:
 3. Generate new signing material and next key id (example: `k7` to `k8`).
 4. Record a change ticket with planned overlap window duration.
 
+Preflight verification script:
+- `scripts/Test-PolicySecretProviderReadiness.ps1`
+
 ## Rotation Checklist
+
+0. Run preflight checks before writing credentials:
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode credential-manager -Environment production`
 
 1. Inventory current configured targets:
    - `powershell -ExecutionPolicy Bypass -File .\scripts\Set-PolicyCredentialSecrets.ps1 -Action list`
@@ -43,6 +49,8 @@ Provisioning utility:
 3. Validate post-cutover:
    - Old `k7-...` tokens fail verification.
    - New `k8-...` tokens continue to verify.
+4. Re-run preflight checks:
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode credential-manager -Environment production`
 
 ## Rollback Procedure
 
@@ -64,6 +72,17 @@ Only for controlled diagnostics, not normal production operation:
    - set `SENTINEL_POLICY_ALLOW_ENV_FALLBACK=1`
 2. Provide environment signing values for temporary recovery.
 3. Remove fallback override after incident resolution.
+
+## Quick Validation Commands
+
+1. Credential Manager production readiness:
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode credential-manager -Environment production`
+2. Auto mode readiness:
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode auto -Environment production`
+3. Rotation overlap readiness (requires previous-key material):
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode credential-manager -Environment production -RequirePrevious`
+4. JSON output for pipeline parsing:
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Test-PolicySecretProviderReadiness.ps1 -ProviderMode auto -Environment production -OutputJson`
 
 ## Audit Notes
 
