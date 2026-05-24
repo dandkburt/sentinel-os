@@ -318,3 +318,11 @@ TEST(PolicyCapabilityEngineReal, RejectKeyMismatch) {
 
     reset_policy_signing_key_for_tests();
 }
+
+TEST(PolicyCapabilityEngineReal, HmacSha256KnownVector) {
+    // RFC-style known value for key="key", message="The quick brown fox jumps over the lazy dog"
+    set_policy_signing_key_for_tests("key");
+    const auto mac = compute_policy_hmac_for_tests("The quick brown fox jumps over the lazy dog");
+    EXPECT_EQ(mac, "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
+    reset_policy_signing_key_for_tests();
+}

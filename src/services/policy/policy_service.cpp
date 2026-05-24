@@ -8,6 +8,8 @@
 #include <sstream>
 #include <cctype>
 #include <mutex>
+#include <array>
+#include <cstdint>
 
 namespace sentinel::services::policy {
 
@@ -130,16 +132,154 @@ std::string build_unsigned_token(const std::string& version,
     return version + "." + extension_id + "." + token_id;
 }
 
-std::string to_hex(uint64_t value) {
+std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
     std::ostringstream ss;
-    ss << std::hex << value;
+    ss << std::hex;
+    ss.fill('0');
+    for (uint8_t b : bytes) {
+        ss.width(2);
+        ss << static_cast<unsigned int>(b);
+    }
     return ss.str();
 }
 
+inline uint32_t rotr(uint32_t value, uint32_t shift) {
+    return (value >> shift) | (value << (32 - shift));
+}
+
+uint32_t read_be_u32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
+void write_be_u32(uint8_t* p, uint32_t value) {
+    p[0] = static_cast<uint8_t>((value >> 24) & 0xff);
+    p[1] = static_cast<uint8_t>((value >> 16) & 0xff);
+    p[2] = static_cast<uint8_t>((value >> 8) & 0xff);
+    p[3] = static_cast<uint8_t>(value & 0xff);
+}
+
+std::vector<uint8_t> sha256_bytes(const std::vector<uint8_t>& input) {
+    static const std::array<uint32_t, 64> k = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    };
+
+    uint32_t h0 = 0x6a09e667;
+    uint32_t h1 = 0xbb67ae85;
+    uint32_t h2 = 0x3c6ef372;
+    uint32_t h3 = 0xa54ff53a;
+    uint32_t h4 = 0x510e527f;
+    uint32_t h5 = 0x9b05688c;
+    uint32_t h6 = 0x1f83d9ab;
+    uint32_t h7 = 0x5be0cd19;
+
+    std::vector<uint8_t> data = input;
+    const uint64_t bit_len = static_cast<uint64_t>(data.size()) * 8ULL;
+    data.push_back(0x80);
+    while ((data.size() % 64) != 56) {
+        data.push_back(0x00);
+    }
+    for (int i = 7; i >= 0; --i) {
+        data.push_back(static_cast<uint8_t>((bit_len >> (i * 8)) & 0xff));
+    }
+
+    std::array<uint32_t, 64> w{};
+    for (size_t chunk = 0; chunk < data.size(); chunk += 64) {
+        for (size_t i = 0; i < 16; ++i) {
+            w[i] = read_be_u32(&data[chunk + i * 4]);
+        }
+        for (size_t i = 16; i < 64; ++i) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+
+        uint32_t a = h0;
+        uint32_t b = h1;
+        uint32_t c = h2;
+        uint32_t d = h3;
+        uint32_t e = h4;
+        uint32_t f = h5;
+        uint32_t g = h6;
+        uint32_t h = h7;
+
+        for (size_t i = 0; i < 64; ++i) {
+            const uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            const uint32_t ch = (e & f) ^ ((~e) & g);
+            const uint32_t temp1 = h + s1 + ch + k[i] + w[i];
+            const uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            const uint32_t temp2 = s0 + maj;
+
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+
+        h0 += a;
+        h1 += b;
+        h2 += c;
+        h3 += d;
+        h4 += e;
+        h5 += f;
+        h6 += g;
+        h7 += h;
+    }
+
+    std::vector<uint8_t> digest(32, 0);
+    write_be_u32(&digest[0], h0);
+    write_be_u32(&digest[4], h1);
+    write_be_u32(&digest[8], h2);
+    write_be_u32(&digest[12], h3);
+    write_be_u32(&digest[16], h4);
+    write_be_u32(&digest[20], h5);
+    write_be_u32(&digest[24], h6);
+    write_be_u32(&digest[28], h7);
+    return digest;
+}
+
+std::string hmac_sha256_hex(const std::string& key, const std::string& message) {
+    constexpr size_t block_size = 64;
+    std::vector<uint8_t> key_bytes(key.begin(), key.end());
+    if (key_bytes.size() > block_size) {
+        key_bytes = sha256_bytes(key_bytes);
+    }
+    key_bytes.resize(block_size, 0x00);
+
+    std::vector<uint8_t> o_key_pad(block_size, 0x5c);
+    std::vector<uint8_t> i_key_pad(block_size, 0x36);
+    for (size_t i = 0; i < block_size; ++i) {
+        o_key_pad[i] ^= key_bytes[i];
+        i_key_pad[i] ^= key_bytes[i];
+    }
+
+    std::vector<uint8_t> inner(i_key_pad.begin(), i_key_pad.end());
+    inner.insert(inner.end(), message.begin(), message.end());
+    const std::vector<uint8_t> inner_hash = sha256_bytes(inner);
+
+    std::vector<uint8_t> outer(o_key_pad.begin(), o_key_pad.end());
+    outer.insert(outer.end(), inner_hash.begin(), inner_hash.end());
+    const std::vector<uint8_t> mac = sha256_bytes(outer);
+
+    return bytes_to_hex(mac);
+}
+
 std::string compute_signature(const std::string& unsigned_token, const std::string& signing_key) {
-    // Scaffolding signature implementation; replace with HMAC-SHA256 in hardening pass.
-    const uint64_t sig = std::hash<std::string>{}(signing_key + "|" + unsigned_token);
-    return to_hex(sig);
+    return hmac_sha256_hex(signing_key, unsigned_token);
 }
 
 enum class TokenValidationFailure {
@@ -510,6 +650,10 @@ void set_policy_signing_key_for_tests(const std::string& key) {
 void reset_policy_signing_key_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
     g_signing_key = kDefaultSigningKey;
+}
+
+std::string compute_policy_hmac_for_tests(const std::string& message) {
+    return hmac_sha256_hex(current_signing_key(), message);
 }
 
 }  // namespace sentinel::services::policy

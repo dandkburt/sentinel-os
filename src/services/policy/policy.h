@@ -97,4 +97,7 @@ namespace sentinel::services::policy {
 
     /// @brief Test hook: reset signing key back to the default value.
     void reset_policy_signing_key_for_tests();
+
+    /// @brief Test hook: compute HMAC-SHA256 hex signature for deterministic unit tests.
+    std::string compute_policy_hmac_for_tests(const std::string& message);
 }
