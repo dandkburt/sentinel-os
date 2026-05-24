@@ -2,6 +2,9 @@
 #include "policy.h"
 #include <memory>
 #include <algorithm>
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 using namespace sentinel::services::policy;
 
@@ -148,4 +151,90 @@ TEST_F(PolicyServiceTest, CheckPermission) {
 TEST_F(PolicyServiceTest, DenyUnprivilegedPermission) {
     bool result = policy_service->has_permission("unprivileged_extension", "extension:install");
     EXPECT_FALSE(result);
+}
+
+namespace {
+std::string unique_extension_id(const std::string& base) {
+    static std::atomic<unsigned int> counter{0};
+    return base + "_" + std::to_string(++counter);
+}
+}  // namespace
+
+TEST(PolicyCapabilityEngineReal, RejectEmptyToken) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    auto result = capability_engine.verify_token("", "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectMalformedToken) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    auto result = capability_engine.verify_token("malformed_token", "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectExpiredToken) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("exp");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"}, 1);
+    ASSERT_FALSE(token.empty());
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    auto result = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectRevokedToken) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("rev");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+    ASSERT_TRUE(capability_engine.revoke_token(token));
+
+    auto result = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, AcceptExactCapability) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("exact");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto result = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, AcceptNamespaceWildcardCapability) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("wild");
+    const auto token = capability_engine.issue_token(extension_id, {"extension:*"});
+    ASSERT_FALSE(token.empty());
+
+    auto result = capability_engine.verify_token(token, "extension:install");
+    EXPECT_TRUE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, RejectCapabilityMismatch) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    const auto extension_id = unique_extension_id("mismatch");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto result = capability_engine.verify_token(token, "network:send");
+    EXPECT_FALSE(result.is_valid);
 }

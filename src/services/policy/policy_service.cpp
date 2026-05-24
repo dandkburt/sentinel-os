@@ -5,10 +5,14 @@
 #include <algorithm>
 #include <set>
 #include <vector>
+#include <sstream>
+#include <cctype>
 
 namespace sentinel::services::policy {
 
 namespace {
+constexpr const char* kTokenVersion = "v1";
+
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
         return true;
@@ -96,19 +100,79 @@ bool parse_effect(const std::string& effect_raw, PolicyDecision& effect_out) {
     }
     return false;
 }
+
+bool is_safe_token_segment(const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+
+    for (char c : value) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct ParsedToken {
+    std::string version;
+    std::string extension_id;
+    std::string token_id;
+};
+
+bool parse_token(const std::string& token, ParsedToken& out) {
+    if (token.empty()) {
+        return false;
+    }
+
+    const auto first_dot = token.find('.');
+    if (first_dot == std::string::npos) {
+        return false;
+    }
+
+    const auto second_dot = token.find('.', first_dot + 1);
+    if (second_dot == std::string::npos) {
+        return false;
+    }
+
+    if (token.find('.', second_dot + 1) != std::string::npos) {
+        return false;
+    }
+
+    out.version = token.substr(0, first_dot);
+    out.extension_id = token.substr(first_dot + 1, second_dot - first_dot - 1);
+    out.token_id = token.substr(second_dot + 1);
+
+    if (out.version != kTokenVersion) {
+        return false;
+    }
+    if (!is_safe_token_segment(out.extension_id)) {
+        return false;
+    }
+    if (!is_safe_token_segment(out.token_id)) {
+        return false;
+    }
+
+    return true;
+}
 }  // namespace
 
 /// @brief Default capability engine implementation
 class CapabilityEngineImpl : public ICapabilityEngine {
 public:
     CapabilityVerificationResult verify_token(const std::string& token, const std::string& required_capability) override {
-        // TODO: Implement cryptographic token verification
-        // - Verify HMAC signature
-        // - Check expiry timestamp
-        // - Match capability scope
+        ParsedToken parsed;
+        if (!parse_token(token, parsed)) {
+            return {false, "", "", 0, 0};
+        }
         
         auto it = issued_tokens_.find(token);
         if (it == issued_tokens_.end()) {
+            return {false, "", "", 0, 0};
+        }
+
+        if (it->second.extension_id != parsed.extension_id) {
             return {false, "", "", 0, 0};
         }
 
@@ -137,12 +201,12 @@ public:
 
     std::string issue_token(const std::string& extension_id, const std::vector<std::string>& capabilities, 
                            uint32_t expiry_seconds = 0) override {
-        // TODO: Generate cryptographically secure token
-        // - Create capability scope from capabilities vector
-        // - Sign with private key
-        // - Store metadata for verification
+        if (!is_safe_token_segment(extension_id)) {
+            return "";
+        }
         
-        std::string token = "token_" + extension_id + "_" + std::to_string(issued_tokens_.size());
+        const auto token_id = std::to_string(next_token_id_++);
+        const std::string token = std::string(kTokenVersion) + "." + extension_id + "." + token_id;
         
         const auto now = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -198,6 +262,7 @@ private:
     };
 
     std::unordered_map<std::string, TokenMetadata> issued_tokens_;
+    uint64_t next_token_id_ = 1;
 };
 
 /// @brief Default policy service implementation
