@@ -18,7 +18,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Configuration loader, logging framework
   - Estimated effort: 2-3 days
 
-- [ ] **TODO**: Gracefully shutdown subsystems
+- [x] **DONE**: Gracefully shutdown subsystems
   - Location: `BootstrapImpl::shutdown()`
   - Task: Implement cleanup sequence with timeout:
     1. Signal "shutting_down" event

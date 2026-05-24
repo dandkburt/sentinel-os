@@ -2,6 +2,8 @@
 #include <unordered_map>
 #include <iostream>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
 
 namespace sentinel::core {
 
@@ -35,11 +37,19 @@ public:
 
         try {
             fire_lifecycle_event("shutting_down");
-            
-            // TODO: Gracefully shutdown subsystems
-            // - Wait for in-flight operations with timeout
-            // - Cleanup resources
-            // - Stop background threads
+
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+            std::unique_lock<std::mutex> lock(shutdown_mutex_);
+            const bool drained = shutdown_cv_.wait_until(lock, deadline, [this]() {
+                return in_flight_operations_ == 0;
+            });
+
+            if (!drained) {
+                return {BootstrapStatus::InitializationFailed, "Shutdown timed out waiting for in-flight operations"};
+            }
+
+            // TODO: Close policy engine connections and cleanup namespace state.
+            fire_lifecycle_event("shutdown_complete");
             
             initialized_ = false;
             return {BootstrapStatus::Success, "Core runtime shutdown complete"};
@@ -84,6 +94,9 @@ private:
     bool initialized_;
     std::string version_;
     std::mutex callbacks_mutex_;
+    std::mutex shutdown_mutex_;
+    std::condition_variable shutdown_cv_;
+    std::size_t in_flight_operations_ = 0;
     std::unordered_map<std::string, std::vector<LifecycleCallback>> callbacks_;
 };
 
@@ -105,6 +118,7 @@ public:
     }
 
     void* get_subsystem(const std::string& subsystem_name, const std::string& capability) override {
+        (void)capability;
         // TODO: Verify capability before returning subsystem
         auto it = subsystems_.find(subsystem_name);
         if (it != subsystems_.end()) {
