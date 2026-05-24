@@ -5,6 +5,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <utility>
 
 using namespace sentinel::services::policy;
 
@@ -173,6 +174,54 @@ std::vector<std::string> split_token(const std::string& token) {
     }
     return segments;
 }
+
+PolicySigningSecrets make_secrets(const std::string& signing_key,
+                                  const std::string& signing_key_id,
+                                  const std::string& previous_key = "",
+                                  const std::string& previous_key_id = "") {
+    PolicySigningSecrets secrets;
+    secrets.has_signing_key = true;
+    secrets.signing_key = signing_key;
+    secrets.has_signing_key_id = true;
+    secrets.signing_key_id = signing_key_id;
+
+    if (!previous_key.empty()) {
+        secrets.has_previous_signing_key = true;
+        secrets.previous_signing_key = previous_key;
+    }
+    if (!previous_key_id.empty()) {
+        secrets.has_previous_signing_key_id = true;
+        secrets.previous_signing_key_id = previous_key_id;
+    }
+
+    return secrets;
+}
+
+class StaticPolicySigningSecretProvider : public IPolicySigningSecretProvider {
+public:
+    StaticPolicySigningSecretProvider(bool should_load,
+                                      PolicySigningSecrets secrets,
+                                      std::string error = "provider unavailable")
+        : should_load_(should_load), secrets_(std::move(secrets)), error_(std::move(error)) {}
+
+    bool load_signing_secrets(PolicySigningSecrets& out, std::string& error) override {
+        if (!should_load_) {
+            error = error_;
+            return false;
+        }
+        out = secrets_;
+        return true;
+    }
+
+    const char* name() const override {
+        return "static-test-provider";
+    }
+
+private:
+    bool should_load_;
+    PolicySigningSecrets secrets_;
+    std::string error_;
+};
 }  // namespace
 
 TEST(PolicyCapabilityEngineReal, RejectEmptyToken) {
@@ -465,6 +514,105 @@ TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
     _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY=");
     _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
     _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID=");
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, SecretProviderOverridesEnvironmentWhenAvailable) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=env-provider-precedence-key-123");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=k99");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY=");
+
+    auto provider = std::make_shared<StaticPolicySigningSecretProvider>(
+        true,
+        make_secrets("provider-precedence-key-456", "k7"));
+    set_policy_signing_secret_provider_for_tests(provider);
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto token = capability_engine.issue_token(unique_extension_id("provider_precedence"), {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+    EXPECT_EQ(segments[2].rfind("k7-", 0), 0u);
+
+    auto verify = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(verify.is_valid);
+
+    reset_policy_signing_secret_provider_for_tests();
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, MissingSecretProviderFallsBackToEnvironment) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    auto provider = std::make_shared<StaticPolicySigningSecretProvider>(
+        false,
+        PolicySigningSecrets{},
+        "simulated missing provider");
+    set_policy_signing_secret_provider_for_tests(provider);
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=env-fallback-signing-key-789");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=k8");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY=");
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto token = capability_engine.issue_token(unique_extension_id("provider_missing"), {"file:read"});
+    ASSERT_FALSE(token.empty());
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+    EXPECT_EQ(segments[2].rfind("k8-", 0), 0u);
+
+    auto verify = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(verify.is_valid);
+
+    reset_policy_signing_secret_provider_for_tests();
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, SecretProviderRotationCutover) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("provider-old-signing-key-123", "k19")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto token = capability_engine.issue_token(unique_extension_id("provider_rotate"), {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("provider-new-signing-key-456", "k20", "provider-old-signing-key-123", "k19")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    auto during_window = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(during_window.is_valid);
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("provider-new-signing-key-456", "k20")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    auto after_cutover = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(after_cutover.is_valid);
+
+    reset_policy_signing_secret_provider_for_tests();
     reset_policy_signing_key_for_tests();
     reset_policy_previous_signing_key_for_tests();
     reset_policy_signing_key_ids_for_tests();

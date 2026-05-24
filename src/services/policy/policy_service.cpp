@@ -11,6 +11,14 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <utility>
+#include <filesystem>
+#include <fstream>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 
 namespace sentinel::services::policy {
 
@@ -19,6 +27,7 @@ constexpr const char* kTokenVersion = "v1";
 constexpr const char* kDefaultSigningKey = "sentinel-policy-dev-key";
 constexpr const char* kDefaultSigningKeyId = "k1";
 constexpr const char* kDefaultPreviousSigningKeyId = "k0";
+constexpr const char* kDefaultPolicySecretFilePath = "C:\\ProgramData\\SentinelOS\\policy_secrets.dpapi";
 constexpr size_t kMinimumSigningKeyLength = 16;
 constexpr size_t kMaximumSigningKeyIdLength = 16;
 std::mutex g_signing_key_mutex;
@@ -27,6 +36,7 @@ std::string g_previous_signing_key;
 std::string g_signing_key_id = kDefaultSigningKeyId;
 std::string g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
 std::once_flag g_policy_key_env_init_once;
+std::shared_ptr<IPolicySigningSecretProvider> g_policy_signing_secret_provider_for_tests;
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -200,6 +210,175 @@ std::string read_env_var(const char* name) {
 #endif
 }
 
+bool parse_boolean_like(const std::string& value) {
+    return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
+}
+
+void trim_in_place(std::string& value) {
+    const auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+}
+
+bool parse_signing_secret_payload(const std::string& payload, PolicySigningSecrets& out, std::string& error) {
+    std::istringstream stream(payload);
+    std::string line;
+    while (std::getline(stream, line)) {
+        trim_in_place(line);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        const auto sep = line.find('=');
+        if (sep == std::string::npos) {
+            continue;
+        }
+
+        std::string key = line.substr(0, sep);
+        std::string value = line.substr(sep + 1);
+        trim_in_place(key);
+        trim_in_place(value);
+
+        if (key == "SIGNING_KEY") {
+            out.has_signing_key = true;
+            out.signing_key = value;
+        } else if (key == "PREVIOUS_SIGNING_KEY") {
+            out.has_previous_signing_key = true;
+            out.previous_signing_key = value;
+        } else if (key == "SIGNING_KEY_ID") {
+            out.has_signing_key_id = true;
+            out.signing_key_id = value;
+        } else if (key == "PREVIOUS_SIGNING_KEY_ID") {
+            out.has_previous_signing_key_id = true;
+            out.previous_signing_key_id = value;
+        }
+    }
+
+    if (!out.has_signing_key) {
+        error = "secret payload missing SIGNING_KEY";
+        return false;
+    }
+
+    return true;
+}
+
+#ifdef _WIN32
+class DpapiFilePolicySigningSecretProvider final : public IPolicySigningSecretProvider {
+public:
+    const char* name() const override {
+        return "windows-dpapi-file";
+    }
+
+    bool load_signing_secrets(PolicySigningSecrets& out, std::string& error) override {
+        const std::string configured_path = read_env_var("SENTINEL_POLICY_SECRET_FILE");
+        const std::filesystem::path file_path = configured_path.empty()
+            ? std::filesystem::path(kDefaultPolicySecretFilePath)
+            : std::filesystem::path(configured_path);
+
+        if (!std::filesystem::exists(file_path)) {
+            error = "secret file not found";
+            return false;
+        }
+
+        std::ifstream input(file_path, std::ios::binary);
+        if (!input) {
+            error = "unable to open secret file";
+            return false;
+        }
+
+        std::vector<char> encrypted((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        if (encrypted.empty()) {
+            error = "secret file is empty";
+            return false;
+        }
+
+        DATA_BLOB encrypted_blob{};
+        encrypted_blob.pbData = reinterpret_cast<BYTE*>(encrypted.data());
+        encrypted_blob.cbData = static_cast<DWORD>(encrypted.size());
+
+        DATA_BLOB plain_blob{};
+        if (!CryptUnprotectData(&encrypted_blob, nullptr, nullptr, nullptr, nullptr, 0, &plain_blob)) {
+            error = "DPAPI decrypt failed";
+            return false;
+        }
+
+        std::string plain_payload(reinterpret_cast<char*>(plain_blob.pbData), plain_blob.cbData);
+        LocalFree(plain_blob.pbData);
+
+        return parse_signing_secret_payload(plain_payload, out, error);
+    }
+};
+#endif
+
+std::shared_ptr<IPolicySigningSecretProvider> default_policy_signing_secret_provider() {
+#ifdef _WIN32
+    static std::shared_ptr<IPolicySigningSecretProvider> provider = std::make_shared<DpapiFilePolicySigningSecretProvider>();
+    return provider;
+#else
+    return nullptr;
+#endif
+}
+
+std::shared_ptr<IPolicySigningSecretProvider> selected_policy_signing_secret_provider() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    if (g_policy_signing_secret_provider_for_tests) {
+        return g_policy_signing_secret_provider_for_tests;
+    }
+    return default_policy_signing_secret_provider();
+}
+
+bool apply_signing_keys_from_provider(IPolicySigningSecretProvider& provider) {
+    PolicySigningSecrets secrets;
+    std::string error;
+    if (!provider.load_signing_secrets(secrets, error)) {
+        if (!error.empty()) {
+            std::cerr << "Policy signing secret provider '" << provider.name() << "' unavailable: " << error << std::endl;
+        }
+        return false;
+    }
+
+    if (!secrets.has_signing_key || !is_valid_signing_key_material(secrets.signing_key)) {
+        std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid SIGNING_KEY." << std::endl;
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key = secrets.signing_key;
+
+    if (secrets.has_previous_signing_key) {
+        if (secrets.previous_signing_key.empty()) {
+            g_previous_signing_key.clear();
+        } else if (is_valid_signing_key_material(secrets.previous_signing_key)) {
+            g_previous_signing_key = secrets.previous_signing_key;
+        } else {
+            std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid PREVIOUS_SIGNING_KEY; clearing previous key." << std::endl;
+            g_previous_signing_key.clear();
+        }
+    } else {
+        g_previous_signing_key.clear();
+    }
+
+    if (secrets.has_signing_key_id) {
+        if (is_valid_signing_key_id(secrets.signing_key_id)) {
+            g_signing_key_id = secrets.signing_key_id;
+        } else {
+            std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid SIGNING_KEY_ID; keeping existing id." << std::endl;
+        }
+    }
+
+    if (secrets.has_previous_signing_key_id) {
+        if (is_valid_signing_key_id(secrets.previous_signing_key_id)) {
+            g_previous_signing_key_id = secrets.previous_signing_key_id;
+        } else {
+            std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid PREVIOUS_SIGNING_KEY_ID; keeping existing id." << std::endl;
+        }
+    } else {
+        g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
+    }
+
+    return true;
+}
+
 void apply_signing_keys_from_environment() {
     const std::string primary_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY");
     const std::string previous_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY");
@@ -244,9 +423,22 @@ void apply_signing_keys_from_environment() {
     }
 }
 
+void apply_signing_keys_from_config_sources() {
+    if (parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY"))) {
+        apply_signing_keys_from_environment();
+        return;
+    }
+
+    auto provider = selected_policy_signing_secret_provider();
+    const bool provider_applied = provider != nullptr && apply_signing_keys_from_provider(*provider);
+    if (!provider_applied) {
+        apply_signing_keys_from_environment();
+    }
+}
+
 void ensure_policy_signing_keys_initialized() {
     std::call_once(g_policy_key_env_init_once, []() {
-        apply_signing_keys_from_environment();
+        apply_signing_keys_from_config_sources();
     });
 }
 
@@ -852,7 +1044,17 @@ std::string compute_policy_hmac_for_tests(const std::string& message) {
 }
 
 void reload_policy_signing_keys_from_environment_for_tests() {
-    apply_signing_keys_from_environment();
+    apply_signing_keys_from_config_sources();
+}
+
+void set_policy_signing_secret_provider_for_tests(std::shared_ptr<IPolicySigningSecretProvider> provider) {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_policy_signing_secret_provider_for_tests = std::move(provider);
+}
+
+void reset_policy_signing_secret_provider_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_policy_signing_secret_provider_for_tests.reset();
 }
 
 }  // namespace sentinel::services::policy

@@ -23,6 +23,36 @@ struct CapabilityVerificationResult {
     uint64_t token_expires_at;  // Unix timestamp (0 = no expiry)
 };
 
+/// @brief Signing material used by policy token issue/verify.
+struct PolicySigningSecrets {
+    bool has_signing_key = false;
+    std::string signing_key;
+
+    bool has_previous_signing_key = false;
+    std::string previous_signing_key;
+
+    bool has_signing_key_id = false;
+    std::string signing_key_id;
+
+    bool has_previous_signing_key_id = false;
+    std::string previous_signing_key_id;
+};
+
+/// @brief Provider interface for retrieving policy signing secrets from secure storage.
+class IPolicySigningSecretProvider {
+public:
+    virtual ~IPolicySigningSecretProvider() = default;
+
+    /// @brief Load signing secrets from provider storage.
+    /// @param out Populated secret material.
+    /// @param error Optional human-readable failure detail.
+    /// @return true when provider produced secret material; false otherwise.
+    virtual bool load_signing_secrets(PolicySigningSecrets& out, std::string& error) = 0;
+
+    /// @brief Provider name for diagnostics.
+    virtual const char* name() const = 0;
+};
+
 /// @brief Engine for verifying and managing capability tokens
 class ICapabilityEngine {
 public:
@@ -118,4 +148,10 @@ namespace sentinel::services::policy {
 
     /// @brief Test hook: reload signing keys from environment variables.
     void reload_policy_signing_keys_from_environment_for_tests();
+
+    /// @brief Test hook: set signing secret provider override.
+    void set_policy_signing_secret_provider_for_tests(std::shared_ptr<IPolicySigningSecretProvider> provider);
+
+    /// @brief Test hook: clear signing secret provider override.
+    void reset_policy_signing_secret_provider_for_tests();
 }
