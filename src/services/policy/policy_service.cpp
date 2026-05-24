@@ -4,6 +4,7 @@
 #include <chrono>
 #include <algorithm>
 #include <set>
+#include <vector>
 
 namespace sentinel::services::policy {
 
@@ -28,6 +29,71 @@ bool capability_matches(const std::string& granted_capability, const std::string
         }
     }
 
+    return false;
+}
+
+bool extract_json_string_field(const std::string& json, const std::string& key, std::string& out) {
+    const std::string quoted_key = "\"" + key + "\"";
+    const auto key_pos = json.find(quoted_key);
+    if (key_pos == std::string::npos) {
+        return false;
+    }
+
+    const auto colon_pos = json.find(':', key_pos + quoted_key.size());
+    if (colon_pos == std::string::npos) {
+        return false;
+    }
+
+    const auto value_start = json.find('"', colon_pos + 1);
+    if (value_start == std::string::npos) {
+        return false;
+    }
+
+    const auto value_end = json.find('"', value_start + 1);
+    if (value_end == std::string::npos || value_end <= value_start + 1) {
+        return false;
+    }
+
+    out = json.substr(value_start + 1, value_end - value_start - 1);
+    return true;
+}
+
+bool action_matches(const std::string& action_pattern, const std::string& action) {
+    if (action_pattern == "*") {
+        return true;
+    }
+
+    if (action_pattern == action) {
+        return true;
+    }
+
+    const auto wildcard_pos = action_pattern.find(':');
+    if (wildcard_pos != std::string::npos &&
+        wildcard_pos + 1 < action_pattern.size() &&
+        action_pattern[wildcard_pos + 1] == '*') {
+        const auto pattern_prefix = action_pattern.substr(0, wildcard_pos);
+        const auto action_sep = action.find(':');
+        if (action_sep != std::string::npos) {
+            return action.substr(0, action_sep) == pattern_prefix;
+        }
+    }
+
+    return false;
+}
+
+bool parse_effect(const std::string& effect_raw, PolicyDecision& effect_out) {
+    if (effect_raw == "allow") {
+        effect_out = PolicyDecision::Allow;
+        return true;
+    }
+    if (effect_raw == "deny") {
+        effect_out = PolicyDecision::Deny;
+        return true;
+    }
+    if (effect_raw == "defer") {
+        effect_out = PolicyDecision::Defer;
+        return true;
+    }
     return false;
 }
 }  // namespace
@@ -141,29 +207,65 @@ public:
 
     PolicyDecision evaluate(const std::string& requester_id, const std::string& action, 
                            const std::string& resource_id, const std::string& context = "") override {
-        // TODO: Implement policy evaluation
-        // - Load policy rules
-        // - Match action against rules
-        // - Evaluate conditions
-        // - Return decision
+        for (const auto& rule_id : rule_order_) {
+            const auto it = rules_.find(rule_id);
+            if (it == rules_.end()) {
+                continue;
+            }
 
-        (void)requester_id;
-        (void)resource_id;
-        (void)context;
-        
-        auto it = rules_.find(action);
-        if (it != rules_.end()) {
-            // Rule exists, evaluate it
-            return PolicyDecision::Allow;  // Simplified: allow if rule exists
+            const PolicyRule& rule = it->second;
+            if (!action_matches(rule.action_pattern, action)) {
+                continue;
+            }
+
+            if (!rule.requester_id.empty() && rule.requester_id != requester_id) {
+                continue;
+            }
+
+            if (!rule.resource_id.empty() && rule.resource_id != resource_id) {
+                continue;
+            }
+
+            if (!rule.context_contains.empty() &&
+                context.find(rule.context_contains) == std::string::npos) {
+                continue;
+            }
+
+            return rule.effect;
         }
-        
+
         // Default deny for unknown actions
         return PolicyDecision::Deny;
     }
 
     bool register_rule(const std::string& rule_id, const std::string& rule_condition) override {
-        // TODO: Parse and validate rule condition JSON
-        rules_[rule_id] = rule_condition;
+        if (rule_id.empty() || rule_condition.empty()) {
+            return false;
+        }
+
+        PolicyRule parsed_rule;
+        std::string action_pattern;
+        std::string effect_raw;
+        if (!extract_json_string_field(rule_condition, "action", action_pattern)) {
+            return false;
+        }
+        if (!extract_json_string_field(rule_condition, "effect", effect_raw)) {
+            return false;
+        }
+
+        if (!parse_effect(effect_raw, parsed_rule.effect)) {
+            return false;
+        }
+
+        parsed_rule.action_pattern = action_pattern;
+        extract_json_string_field(rule_condition, "requester_id", parsed_rule.requester_id);
+        extract_json_string_field(rule_condition, "resource_id", parsed_rule.resource_id);
+        extract_json_string_field(rule_condition, "context_contains", parsed_rule.context_contains);
+
+        if (rules_.find(rule_id) == rules_.end()) {
+            rule_order_.push_back(rule_id);
+        }
+        rules_[rule_id] = parsed_rule;
         return true;
     }
 
@@ -193,8 +295,17 @@ public:
     }
 
 private:
+    struct PolicyRule {
+        std::string action_pattern;
+        PolicyDecision effect = PolicyDecision::Deny;
+        std::string requester_id;
+        std::string resource_id;
+        std::string context_contains;
+    };
+
     std::unique_ptr<ICapabilityEngine> capability_engine_;
-    std::unordered_map<std::string, std::string> rules_;
+    std::unordered_map<std::string, PolicyRule> rules_;
+    std::vector<std::string> rule_order_;
     std::unordered_map<std::string, std::unordered_map<std::string, bool>> extension_permissions_;
 };
 

@@ -73,7 +73,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: OpenSSL/Crypto++, random number generator
   - Estimated effort: 2 days
 
-- [ ] **TODO**: Implement policy evaluation
+- [x] **DONE**: Implement policy evaluation
   - Location: `PolicyServiceImpl::evaluate()`
   - Task: Evaluate access policies:
     1. Load policy rules from configuration
@@ -84,7 +84,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Policy rule engine, JSON parsing
   - Estimated effort: 3 days
 
-- [ ] **TODO**: Parse and validate rule condition JSON
+- [x] **DONE**: Parse and validate rule condition JSON
   - Location: `PolicyServiceImpl::register_rule()`
   - Task: Validate and store policy rules:
     1. Parse JSON condition expression

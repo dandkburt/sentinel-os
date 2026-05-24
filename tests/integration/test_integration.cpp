@@ -170,6 +170,32 @@ TEST(PolicyIntegration, HasPermissionFallsBackToCapabilities) {
     EXPECT_FALSE(policy_service.has_permission(extension_id, "network:send"));
 }
 
+TEST(PolicyIntegration, RegisterRuleAndEvaluateActionPatterns) {
+    initialize_policy_service();
+    auto& policy_service = get_policy_service_interface();
+
+    EXPECT_TRUE(policy_service.register_rule(
+        "allow_file_actions",
+        "{\"action\":\"file:*\",\"effect\":\"allow\"}"));
+
+    EXPECT_TRUE(policy_service.register_rule(
+        "allow_open_for_specific_requester",
+        "{\"action\":\"resource:open\",\"effect\":\"allow\",\"requester_id\":\"trusted_ext\"}"));
+
+    EXPECT_EQ(policy_service.evaluate("ext_a", "file:read", "config.json"), PolicyDecision::Allow);
+    EXPECT_EQ(policy_service.evaluate("trusted_ext", "resource:open", "doc_1"), PolicyDecision::Allow);
+    EXPECT_EQ(policy_service.evaluate("other_ext", "resource:open", "doc_1"), PolicyDecision::Deny);
+}
+
+TEST(PolicyIntegration, RegisterRuleRejectsInvalidCondition) {
+    initialize_policy_service();
+    auto& policy_service = get_policy_service_interface();
+
+    EXPECT_FALSE(policy_service.register_rule("missing_effect", "{\"action\":\"file:*\"}"));
+    EXPECT_FALSE(policy_service.register_rule("missing_action", "{\"effect\":\"allow\"}"));
+    EXPECT_FALSE(policy_service.register_rule("bad_effect", "{\"action\":\"file:*\",\"effect\":\"permit\"}"));
+}
+
 /// @brief Integration test: Extension isolation workflow
 TEST(ExtensionIsolationIntegration, FullIsolationWorkflow) {
     // Initialize services
