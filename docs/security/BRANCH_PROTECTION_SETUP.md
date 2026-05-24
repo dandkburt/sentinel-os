@@ -45,9 +45,11 @@ Examples:
    - `powershell -ExecutionPolicy Bypass -File .\scripts\Set-GitHubBranchProtection.ps1 -Owner <owner> -Repo <repo> -Branch main -EnforceAdmins -RequireConversationResolution`
 3. Apply with custom required checks:
    - `powershell -ExecutionPolicy Bypass -File .\scripts\Set-GitHubBranchProtection.ps1 -Owner <owner> -Repo <repo> -RequiredChecks build,startup-smoke,policy-readiness-script-smoke`
+4. Apply using token auth (without `gh` CLI):
+   - `powershell -ExecutionPolicy Bypass -File .\scripts\Set-GitHubBranchProtection.ps1 -Owner <owner> -Repo <repo> -AuthMode token -GitHubToken <token>`
 
 Requirements:
-- `gh` CLI installed and authenticated (`gh auth login`).
+- Either `gh` CLI installed/authenticated (`gh auth login`) or a token via `-GitHubToken` / `GITHUB_TOKEN` / `GH_TOKEN`.
 - Repository admin permissions for branch protection updates.
 
 ## Operational Note

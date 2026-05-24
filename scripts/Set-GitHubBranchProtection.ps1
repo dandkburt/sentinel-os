@@ -19,6 +19,12 @@ param(
     [switch]$EnforceAdmins,
     [switch]$RequireConversationResolution,
     [switch]$RequireLastPushApproval,
+
+    [ValidateSet('auto', 'gh', 'token')]
+    [string]$AuthMode = 'auto',
+
+    [string]$GitHubToken,
+
     [switch]$DryRun
 )
 
@@ -37,6 +43,87 @@ function Assert-GhAuth {
     if ($LASTEXITCODE -ne 0) {
         throw "gh auth status failed. Authenticate with 'gh auth login'. Details:`n$($output -join [Environment]::NewLine)"
     }
+}
+
+function Get-EffectiveToken {
+    param(
+        [string]$ExplicitToken
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitToken)) {
+        return $ExplicitToken
+    }
+
+    $envToken = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN')
+    if (-not [string]::IsNullOrWhiteSpace($envToken)) {
+        return $envToken
+    }
+
+    $ghToken = [Environment]::GetEnvironmentVariable('GH_TOKEN')
+    if (-not [string]::IsNullOrWhiteSpace($ghToken)) {
+        return $ghToken
+    }
+
+    return ''
+}
+
+function Invoke-GitHubProtectionPut {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Owner,
+        [Parameter(Mandatory = $true)]
+        [string]$Repo,
+        [Parameter(Mandatory = $true)]
+        [string]$Branch,
+        [Parameter(Mandatory = $true)]
+        [string]$PayloadJson,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('auto', 'gh', 'token')]
+        [string]$AuthMode,
+        [string]$Token
+    )
+
+    $apiPath = "/repos/$Owner/$Repo/branches/$Branch/protection"
+
+    $ghAvailable = $null -ne (Get-Command gh -ErrorAction SilentlyContinue)
+    $useGh = $false
+
+    if ($AuthMode -eq 'gh') {
+        $useGh = $true
+    } elseif ($AuthMode -eq 'auto' -and $ghAvailable) {
+        $useGh = $true
+    }
+
+    if ($useGh) {
+        Assert-GhAvailable
+        Assert-GhAuth
+
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        try {
+            Set-Content -Path $tempFile -Value $PayloadJson -Encoding utf8
+            $output = & gh api $apiPath --method PUT --input $tempFile 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to apply branch protection with gh. Output:`n$($output -join [Environment]::NewLine)"
+            }
+            return
+        } finally {
+            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $effectiveToken = Get-EffectiveToken -ExplicitToken $Token
+    if ([string]::IsNullOrWhiteSpace($effectiveToken)) {
+        throw "No GitHub token available. Set -GitHubToken or GITHUB_TOKEN/GH_TOKEN, or use -AuthMode gh with authenticated gh CLI."
+    }
+
+    $headers = @{
+        Authorization = "Bearer $effectiveToken"
+        Accept = 'application/vnd.github+json'
+        'X-GitHub-Api-Version' = '2022-11-28'
+    }
+
+    $uri = "https://api.github.com/repos/$Owner/$Repo/branches/$Branch/protection"
+    Invoke-RestMethod -Method Put -Uri $uri -Headers $headers -Body $PayloadJson -ContentType 'application/json' | Out-Null
 }
 
 if ($RequiredChecks.Count -eq 0) {
@@ -66,12 +153,11 @@ $payloadObject = [ordered]@{
 }
 
 $payloadJson = $payloadObject | ConvertTo-Json -Depth 8
-$apiPath = "/repos/$Owner/$Repo/branches/$Branch/protection"
-
 Write-Host "Target repository: $Owner/$Repo"
 Write-Host "Target branch: $Branch"
 Write-Host "Required checks: $($RequiredChecks -join ', ')"
 Write-Host "Required approvals: $RequiredApprovals"
+Write-Host "Auth mode: $AuthMode"
 
 if ($DryRun) {
     Write-Host 'Dry run enabled; payload that would be sent:'
@@ -79,20 +165,7 @@ if ($DryRun) {
     exit 0
 }
 
-Assert-GhAvailable
-Assert-GhAuth
-
 if ($PSCmdlet.ShouldProcess("${Owner}/${Repo}:${Branch}", 'Apply branch protection')) {
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Set-Content -Path $tempFile -Value $payloadJson -Encoding utf8
-        $output = & gh api $apiPath --method PUT --input $tempFile 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to apply branch protection. gh output:`n$($output -join [Environment]::NewLine)"
-        }
-
-        Write-Host 'Branch protection applied successfully.'
-    } finally {
-        Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
-    }
+    Invoke-GitHubProtectionPut -Owner $Owner -Repo $Repo -Branch $Branch -PayloadJson $payloadJson -AuthMode $AuthMode -Token $GitHubToken
+    Write-Host 'Branch protection applied successfully.'
 }
