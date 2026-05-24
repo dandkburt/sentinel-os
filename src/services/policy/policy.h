@@ -98,6 +98,15 @@ namespace sentinel::services::policy {
     /// @brief Test hook: reset signing key back to the default value.
     void reset_policy_signing_key_for_tests();
 
+    /// @brief Test hook: configure previous verification key for dual-key rotation tests.
+    void set_policy_previous_signing_key_for_tests(const std::string& key);
+
+    /// @brief Test hook: reset previous verification key.
+    void reset_policy_previous_signing_key_for_tests();
+
     /// @brief Test hook: compute HMAC-SHA256 hex signature for deterministic unit tests.
     std::string compute_policy_hmac_for_tests(const std::string& message);
+
+    /// @brief Test hook: reload signing keys from environment variables.
+    void reload_policy_signing_keys_from_environment_for_tests();
 }

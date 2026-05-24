@@ -326,3 +326,57 @@ TEST(PolicyCapabilityEngineReal, HmacSha256KnownVector) {
     EXPECT_EQ(mac, "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
     reset_policy_signing_key_for_tests();
 }
+
+TEST(PolicyCapabilityEngineReal, DualKeyVerifyWindowSupportsCutover) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_key_for_tests("old-rotation-signing-key-123");
+    const auto extension_id = unique_extension_id("rotate");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    set_policy_signing_key_for_tests("new-rotation-signing-key-456");
+    set_policy_previous_signing_key_for_tests("old-rotation-signing-key-123");
+
+    auto during_window = capability_engine.verify_token(token, "file:read");
+    EXPECT_TRUE(during_window.is_valid);
+
+    reset_policy_previous_signing_key_for_tests();
+    auto after_cutover = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(after_cutover.is_valid);
+
+    reset_policy_signing_key_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=too-short");
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto extension_id_1 = unique_extension_id("env_invalid");
+    const auto token_1 = capability_engine.issue_token(extension_id_1, {"file:read"});
+    ASSERT_FALSE(token_1.empty());
+
+    auto verify_1 = capability_engine.verify_token(token_1, "file:read");
+    EXPECT_TRUE(verify_1.is_valid);
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=env-validated-signing-key-789");
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto extension_id_2 = unique_extension_id("env_valid");
+    const auto token_2 = capability_engine.issue_token(extension_id_2, {"file:read"});
+    ASSERT_FALSE(token_2.empty());
+
+    auto verify_2 = capability_engine.verify_token(token_2, "file:read");
+    EXPECT_TRUE(verify_2.is_valid);
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=");
+    _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY=");
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+}

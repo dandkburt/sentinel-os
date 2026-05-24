@@ -10,14 +10,17 @@
 #include <mutex>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 
 namespace sentinel::services::policy {
 
 namespace {
 constexpr const char* kTokenVersion = "v1";
 constexpr const char* kDefaultSigningKey = "sentinel-policy-dev-key";
+constexpr size_t kMinimumSigningKeyLength = 16;
 std::mutex g_signing_key_mutex;
 std::string g_signing_key = kDefaultSigningKey;
+std::string g_previous_signing_key;
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -124,6 +127,68 @@ bool is_safe_token_segment(const std::string& value) {
 std::string current_signing_key() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
     return g_signing_key;
+}
+
+std::string current_previous_signing_key() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    return g_previous_signing_key;
+}
+
+bool is_valid_signing_key_material(const std::string& key) {
+    if (key.size() < kMinimumSigningKeyLength) {
+        return false;
+    }
+
+    for (char c : key) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (uc < 33 || uc > 126) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string read_env_var(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&value, &len, name) != 0 || value == nullptr) {
+        return "";
+    }
+    std::string result(value);
+    free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? "" : std::string(value);
+#endif
+}
+
+void apply_signing_keys_from_environment() {
+    const std::string primary_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY");
+    const std::string previous_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY");
+
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+
+    if (!primary_env.empty()) {
+        const std::string primary_candidate(primary_env);
+        if (is_valid_signing_key_material(primary_candidate)) {
+            g_signing_key = primary_candidate;
+        } else {
+            std::cerr << "Policy signing key from environment failed validation; keeping existing key." << std::endl;
+        }
+    }
+
+    if (!previous_env.empty()) {
+        const std::string previous_candidate(previous_env);
+        if (is_valid_signing_key_material(previous_candidate)) {
+            g_previous_signing_key = previous_candidate;
+        } else {
+            std::cerr << "Policy previous signing key from environment failed validation; disabling previous key." << std::endl;
+            g_previous_signing_key.clear();
+        }
+    }
 }
 
 std::string build_unsigned_token(const std::string& version,
@@ -315,8 +380,8 @@ const char* to_string(TokenValidationFailure failure) {
 void log_validation_failure(TokenValidationFailure failure,
                             const std::string& token,
                             const std::string& required_capability) {
+    (void)token;
     std::cerr << "Token validation failed [" << to_string(failure)
-              << "] token='" << token
               << "' required='" << required_capability << "'" << std::endl;
 }
 
@@ -403,8 +468,11 @@ public:
         const std::string unsigned_token = build_unsigned_token(parsed.version, parsed.extension_id, parsed.token_id);
         const std::string expected_signature = compute_signature(unsigned_token, current_signing_key());
         if (expected_signature != parsed.signature) {
-            log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
-            return {false, "", "", 0, 0};
+            const std::string previous_key = current_previous_signing_key();
+            if (previous_key.empty() || compute_signature(unsigned_token, previous_key) != parsed.signature) {
+                log_validation_failure(TokenValidationFailure::SignatureInvalid, token, required_capability);
+                return {false, "", "", 0, 0};
+            }
         }
 
         const auto now = static_cast<uint64_t>(
@@ -633,6 +701,7 @@ PolicyServiceImpl& get_policy_service() {
 }
 
 void initialize_policy_service() {
+    apply_signing_keys_from_environment();
     if (g_policy_service == nullptr) {
         g_policy_service = new PolicyServiceImpl();
     }
@@ -652,8 +721,22 @@ void reset_policy_signing_key_for_tests() {
     g_signing_key = kDefaultSigningKey;
 }
 
+void set_policy_previous_signing_key_for_tests(const std::string& key) {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_previous_signing_key = key;
+}
+
+void reset_policy_previous_signing_key_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_previous_signing_key.clear();
+}
+
 std::string compute_policy_hmac_for_tests(const std::string& message) {
     return hmac_sha256_hex(current_signing_key(), message);
+}
+
+void reload_policy_signing_keys_from_environment_for_tests() {
+    apply_signing_keys_from_environment();
 }
 
 }  // namespace sentinel::services::policy
