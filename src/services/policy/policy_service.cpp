@@ -25,6 +25,7 @@ std::string g_signing_key = kDefaultSigningKey;
 std::string g_previous_signing_key;
 std::string g_signing_key_id = kDefaultSigningKeyId;
 std::string g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
+std::once_flag g_policy_key_env_init_once;
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -221,6 +222,12 @@ void apply_signing_keys_from_environment() {
             std::cerr << "Policy previous signing key id from environment failed validation; keeping existing id." << std::endl;
         }
     }
+}
+
+void ensure_policy_signing_keys_initialized() {
+    std::call_once(g_policy_key_env_init_once, []() {
+        apply_signing_keys_from_environment();
+    });
 }
 
 std::string build_unsigned_token(const std::string& version,
@@ -755,6 +762,7 @@ private:
 static PolicyServiceImpl* g_policy_service = nullptr;
 
 PolicyServiceImpl& get_policy_service() {
+    ensure_policy_signing_keys_initialized();
     if (g_policy_service == nullptr) {
         g_policy_service = new PolicyServiceImpl();
     }
@@ -762,10 +770,7 @@ PolicyServiceImpl& get_policy_service() {
 }
 
 void initialize_policy_service() {
-    apply_signing_keys_from_environment();
-    if (g_policy_service == nullptr) {
-        g_policy_service = new PolicyServiceImpl();
-    }
+    (void)get_policy_service();
 }
 
 IPolicyService& get_policy_service_interface() {

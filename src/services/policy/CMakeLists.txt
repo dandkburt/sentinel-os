@@ -8,11 +8,6 @@ target_include_directories(policy_service
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(policy_service
-    PUBLIC
-        core_runtime
-)
-
 target_compile_features(policy_service PUBLIC cxx_std_20)
 
 if(MSVC)

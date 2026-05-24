@@ -89,7 +89,7 @@ namespace sentinel::services::policy {
     /// @brief Get the global policy service instance
     IPolicyService& get_policy_service_interface();
 
-    /// @brief Initialize the policy service (must be called before use)
+    /// @brief Initialize policy service eagerly (optional; first-use initialization is automatic)
     void initialize_policy_service();
 
     /// @brief Test hook: override signing key used by token issue/verify scaffolding.

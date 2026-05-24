@@ -18,14 +18,10 @@ target_include_directories(sentinel_runtime_contract
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-target_link_libraries(core_runtime
-    PUBLIC
-        policy_service
-)
-
 target_link_libraries(sentinel_runtime_contract
     PRIVATE
         core_runtime
+        policy_service
 )
 
 target_compile_definitions(sentinel_runtime_contract
