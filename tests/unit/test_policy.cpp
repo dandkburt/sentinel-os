@@ -490,6 +490,7 @@ TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
     initialize_policy_service();
     auto& capability_engine = get_policy_service_interface().capability_engine();
 
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=1");
     _putenv("SENTINEL_POLICY_SIGNING_KEY=too-short");
     reload_policy_signing_keys_from_environment_for_tests();
 
@@ -514,6 +515,7 @@ TEST(PolicyCapabilityEngineReal, EnvironmentSigningKeyValidationAndReload) {
     _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY=");
     _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
     _putenv("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID=");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=");
     reset_policy_signing_key_for_tests();
     reset_policy_previous_signing_key_for_tests();
     reset_policy_signing_key_ids_for_tests();
@@ -562,6 +564,7 @@ TEST(PolicyCapabilityEngineReal, MissingSecretProviderFallsBackToEnvironment) {
 
     _putenv("SENTINEL_POLICY_SIGNING_KEY=env-fallback-signing-key-789");
     _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=k8");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=1");
     _putenv("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY=");
     reload_policy_signing_keys_from_environment_for_tests();
 
@@ -573,6 +576,38 @@ TEST(PolicyCapabilityEngineReal, MissingSecretProviderFallsBackToEnvironment) {
 
     auto verify = capability_engine.verify_token(token, "file:read");
     EXPECT_TRUE(verify.is_valid);
+
+    reset_policy_signing_secret_provider_for_tests();
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=");
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, MissingSecretProviderWithoutEnvFallbackDoesNotAdoptEnvironmentKeys) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_key_for_tests("known-signing-key-without-fallback-123");
+    set_policy_signing_key_id_for_tests("k33");
+
+    auto provider = std::make_shared<StaticPolicySigningSecretProvider>(
+        false,
+        PolicySigningSecrets{},
+        "simulated missing provider");
+    set_policy_signing_secret_provider_for_tests(provider);
+
+    _putenv("SENTINEL_POLICY_SIGNING_KEY=env-key-should-not-be-used-456");
+    _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=k44");
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=");
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto token = capability_engine.issue_token(unique_extension_id("provider_no_fallback"), {"file:read"});
+    ASSERT_FALSE(token.empty());
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+    EXPECT_EQ(segments[2].rfind("k33-", 0), 0u);
 
     reset_policy_signing_secret_provider_for_tests();
     _putenv("SENTINEL_POLICY_SIGNING_KEY=");

@@ -18,6 +18,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
+#include <wincred.h>
 #endif
 
 namespace sentinel::services::policy {
@@ -28,6 +29,7 @@ constexpr const char* kDefaultSigningKey = "sentinel-policy-dev-key";
 constexpr const char* kDefaultSigningKeyId = "k1";
 constexpr const char* kDefaultPreviousSigningKeyId = "k0";
 constexpr const char* kDefaultPolicySecretFilePath = "C:\\ProgramData\\SentinelOS\\policy_secrets.dpapi";
+constexpr const char* kDefaultPolicySecretTargetPrefix = "SentinelOS/Policy";
 constexpr size_t kMinimumSigningKeyLength = 16;
 constexpr size_t kMaximumSigningKeyIdLength = 16;
 std::mutex g_signing_key_mutex;
@@ -214,6 +216,13 @@ bool parse_boolean_like(const std::string& value) {
     return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
 }
 
+std::string lowercase_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
 void trim_in_place(std::string& value) {
     const auto not_space = [](unsigned char c) { return !std::isspace(c); };
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
@@ -263,6 +272,68 @@ bool parse_signing_secret_payload(const std::string& payload, PolicySigningSecre
 }
 
 #ifdef _WIN32
+bool read_credential_secret(const std::wstring& target, std::string& out, std::string& error) {
+    PCREDENTIALW credential = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
+        const DWORD code = GetLastError();
+        if (code == ERROR_NOT_FOUND) {
+            error = "credential not found";
+        } else {
+            error = "CredRead failed";
+        }
+        return false;
+    }
+
+    out.assign(reinterpret_cast<const char*>(credential->CredentialBlob),
+               reinterpret_cast<const char*>(credential->CredentialBlob) + credential->CredentialBlobSize);
+    CredFree(credential);
+    return true;
+}
+
+class WindowsCredentialPolicySigningSecretProvider final : public IPolicySigningSecretProvider {
+public:
+    const char* name() const override {
+        return "windows-credential-manager";
+    }
+
+    bool load_signing_secrets(PolicySigningSecrets& out, std::string& error) override {
+        const std::string prefix_env = read_env_var("SENTINEL_POLICY_SECRET_TARGET_PREFIX");
+        const std::string prefix = prefix_env.empty() ? kDefaultPolicySecretTargetPrefix : prefix_env;
+        const std::wstring prefix_w(prefix.begin(), prefix.end());
+
+        auto target = [&prefix_w](const wchar_t* name) {
+            return prefix_w + L"/" + name;
+        };
+
+        std::string secret;
+        if (!read_credential_secret(target(L"SIGNING_KEY"), secret, error)) {
+            return false;
+        }
+        out.has_signing_key = true;
+        out.signing_key = secret;
+
+        if (read_credential_secret(target(L"PREVIOUS_SIGNING_KEY"), secret, error)) {
+            out.has_previous_signing_key = true;
+            out.previous_signing_key = secret;
+        }
+        error.clear();
+
+        if (read_credential_secret(target(L"SIGNING_KEY_ID"), secret, error)) {
+            out.has_signing_key_id = true;
+            out.signing_key_id = secret;
+        }
+        error.clear();
+
+        if (read_credential_secret(target(L"PREVIOUS_SIGNING_KEY_ID"), secret, error)) {
+            out.has_previous_signing_key_id = true;
+            out.previous_signing_key_id = secret;
+        }
+        error.clear();
+
+        return true;
+    }
+};
+
 class DpapiFilePolicySigningSecretProvider final : public IPolicySigningSecretProvider {
 public:
     const char* name() const override {
@@ -310,21 +381,64 @@ public:
 };
 #endif
 
-std::shared_ptr<IPolicySigningSecretProvider> default_policy_signing_secret_provider() {
-#ifdef _WIN32
-    static std::shared_ptr<IPolicySigningSecretProvider> provider = std::make_shared<DpapiFilePolicySigningSecretProvider>();
-    return provider;
-#else
-    return nullptr;
-#endif
+enum class PolicySecretProviderMode {
+    Auto,
+    CredentialManager,
+    DpapiFile,
+    EnvironmentOnly,
+};
+
+PolicySecretProviderMode configured_secret_provider_mode() {
+    const std::string raw_mode = lowercase_ascii(read_env_var("SENTINEL_POLICY_SECRET_PROVIDER"));
+    if (raw_mode == "" || raw_mode == "auto") {
+        return PolicySecretProviderMode::Auto;
+    }
+    if (raw_mode == "credential" || raw_mode == "credman" || raw_mode == "credential-manager") {
+        return PolicySecretProviderMode::CredentialManager;
+    }
+    if (raw_mode == "dpapi-file" || raw_mode == "dpapi") {
+        return PolicySecretProviderMode::DpapiFile;
+    }
+    if (raw_mode == "env" || raw_mode == "environment") {
+        return PolicySecretProviderMode::EnvironmentOnly;
+    }
+    return PolicySecretProviderMode::Auto;
 }
 
-std::shared_ptr<IPolicySigningSecretProvider> selected_policy_signing_secret_provider() {
+std::shared_ptr<IPolicySigningSecretProvider> test_policy_signing_secret_provider() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    if (g_policy_signing_secret_provider_for_tests) {
-        return g_policy_signing_secret_provider_for_tests;
+    return g_policy_signing_secret_provider_for_tests;
+}
+
+std::vector<std::shared_ptr<IPolicySigningSecretProvider>> configured_builtin_providers() {
+    std::vector<std::shared_ptr<IPolicySigningSecretProvider>> providers;
+
+#ifdef _WIN32
+    static std::shared_ptr<IPolicySigningSecretProvider> credential_provider =
+        std::make_shared<WindowsCredentialPolicySigningSecretProvider>();
+    static std::shared_ptr<IPolicySigningSecretProvider> dpapi_provider =
+        std::make_shared<DpapiFilePolicySigningSecretProvider>();
+
+    switch (configured_secret_provider_mode()) {
+        case PolicySecretProviderMode::CredentialManager:
+            providers.push_back(credential_provider);
+            break;
+        case PolicySecretProviderMode::DpapiFile:
+            providers.push_back(dpapi_provider);
+            break;
+        case PolicySecretProviderMode::EnvironmentOnly:
+            break;
+        case PolicySecretProviderMode::Auto:
+        default:
+            providers.push_back(credential_provider);
+            providers.push_back(dpapi_provider);
+            break;
     }
-    return default_policy_signing_secret_provider();
+#else
+    (void)providers;
+#endif
+
+    return providers;
 }
 
 bool apply_signing_keys_from_provider(IPolicySigningSecretProvider& provider) {
@@ -424,15 +538,31 @@ void apply_signing_keys_from_environment() {
 }
 
 void apply_signing_keys_from_config_sources() {
-    if (parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY"))) {
+    if (parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY")) ||
+        configured_secret_provider_mode() == PolicySecretProviderMode::EnvironmentOnly) {
         apply_signing_keys_from_environment();
         return;
     }
 
-    auto provider = selected_policy_signing_secret_provider();
-    const bool provider_applied = provider != nullptr && apply_signing_keys_from_provider(*provider);
-    if (!provider_applied) {
+    bool provider_applied = false;
+
+    auto test_provider = test_policy_signing_secret_provider();
+    if (test_provider != nullptr) {
+        provider_applied = apply_signing_keys_from_provider(*test_provider);
+    } else {
+        const auto providers = configured_builtin_providers();
+        for (const auto& provider : providers) {
+            if (provider != nullptr && apply_signing_keys_from_provider(*provider)) {
+                provider_applied = true;
+                break;
+            }
+        }
+    }
+
+    if (!provider_applied && parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_FALLBACK"))) {
         apply_signing_keys_from_environment();
+    } else if (!provider_applied) {
+        std::cerr << "Policy signing secret provider unavailable and env fallback disabled; retaining existing in-memory keys." << std::endl;
     }
 }
 

@@ -31,7 +31,22 @@ Signing and verification keys are configured with:
 - `SENTINEL_POLICY_SIGNING_KEY_ID`
 - `SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID`
 
-On first policy service creation, environment-backed key material is loaded automatically.
+Provider selection controls:
+- `SENTINEL_POLICY_SECRET_PROVIDER`:
+	- `auto` (default): try stronger OS-backed providers first.
+	- `credential-manager`: Windows Credential Manager provider.
+	- `dpapi-file`: DPAPI-encrypted local file provider.
+	- `env`: environment only.
+- `SENTINEL_POLICY_SECRET_TARGET_PREFIX`:
+	- Credential Manager target prefix (default: `SentinelOS/Policy`).
+- `SENTINEL_POLICY_SECRET_FILE`:
+	- Path to DPAPI-encrypted secret payload file.
+- `SENTINEL_POLICY_ALLOW_ENV_FALLBACK`:
+	- Dev/test fallback switch; when set truthy, environment keys may be used if providers are unavailable.
+- `SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY`:
+	- Forces environment-only loading (development/testing only).
+
+On first policy service creation, policy key material is loaded automatically from configured provider strategy.
 
 ### Rotation Convention
 
