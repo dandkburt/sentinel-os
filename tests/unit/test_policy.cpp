@@ -361,16 +361,16 @@ TEST(PolicyCapabilityEngineReal, KeyIdRoutesVerificationToPreviousKey) {
     auto& capability_engine = get_policy_service_interface().capability_engine();
 
     set_policy_signing_key_for_tests("old-routing-signing-key-123");
-    set_policy_signing_key_id_for_tests("kid_old");
+    set_policy_signing_key_id_for_tests("k10");
 
     const auto extension_id = unique_extension_id("kid_route");
     const auto token = capability_engine.issue_token(extension_id, {"file:read"});
     ASSERT_FALSE(token.empty());
 
     set_policy_signing_key_for_tests("new-routing-signing-key-456");
-    set_policy_signing_key_id_for_tests("kid_new");
+    set_policy_signing_key_id_for_tests("k11");
     set_policy_previous_signing_key_for_tests("old-routing-signing-key-123");
-    set_policy_previous_signing_key_id_for_tests("kid_old");
+    set_policy_previous_signing_key_id_for_tests("k10");
 
     auto verify_with_previous = capability_engine.verify_token(token, "file:read");
     EXPECT_TRUE(verify_with_previous.is_valid);
@@ -391,17 +391,46 @@ TEST(PolicyCapabilityEngineReal, UnknownExplicitKeyIdIsRejected) {
     auto& capability_engine = get_policy_service_interface().capability_engine();
 
     set_policy_signing_key_for_tests("stable-routing-signing-key-123");
-    set_policy_signing_key_id_for_tests("kid_mystery");
+    set_policy_signing_key_id_for_tests("k42");
 
     const auto extension_id = unique_extension_id("kid_unknown");
     const auto token = capability_engine.issue_token(extension_id, {"file:read"});
     ASSERT_FALSE(token.empty());
 
     // Reclassify configured ids so token carries an explicit, unknown key id at verify time.
-    set_policy_signing_key_id_for_tests("kid_current");
-    set_policy_previous_signing_key_id_for_tests("kid_previous");
+    set_policy_signing_key_id_for_tests("k1");
+    set_policy_previous_signing_key_id_for_tests("k2");
 
     auto verify = capability_engine.verify_token(token, "file:read");
+    EXPECT_FALSE(verify.is_valid);
+
+    reset_policy_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, RejectMalformedExplicitKeyIdToken) {
+    initialize_policy_service();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    set_policy_signing_key_for_tests("stable-routing-signing-key-123");
+    set_policy_signing_key_id_for_tests("k3");
+
+    const auto extension_id = unique_extension_id("kid_format");
+    const auto token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4);
+
+    const auto dash = segments[2].find('-');
+    ASSERT_NE(dash, std::string::npos);
+    segments[2] = std::string("invalidKid") + segments[2].substr(dash);
+    const std::string malformed_token = segments[0] + "." + segments[1] + "." + segments[2] + "." + segments[3];
+
+    auto verify = capability_engine.verify_token(malformed_token, "file:read");
     EXPECT_FALSE(verify.is_valid);
 
     reset_policy_signing_key_for_tests();
