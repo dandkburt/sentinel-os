@@ -269,7 +269,7 @@ Each TODO is scoped to a specific component and layer.
 - [x] Extension manifest format and parser
 - [x] Extension registration and discovery
 - [x] Extension lifecycle management (load, enable, disable, unload)
-- [ ] Extension dependency resolution
+- [x] Extension dependency resolution
 
 ## Priority 3: Integration & Testing (Phase 3)
 

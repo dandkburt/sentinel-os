@@ -1,11 +1,14 @@
 #include "extension_registry.h"
 
 #include <algorithm>
+#include <functional>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 
 namespace sentinel::core {
@@ -167,6 +170,73 @@ public:
         return true;
     }
 
+    bool resolve_extension_dependencies(std::vector<std::string>& ordered_ids,
+                                        std::string& error) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        std::set<std::string> nodes;
+        for (const auto& pair : records_) {
+            nodes.insert(pair.first);
+        }
+
+        return resolve_nodes_locked(nodes, ordered_ids, error);
+    }
+
+    bool resolve_extension_dependencies_for_target(const std::string& extension_id,
+                                                   std::vector<std::string>& ordered_ids,
+                                                   std::string& error) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (records_.find(extension_id) == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        std::set<std::string> closure;
+        if (!collect_transitive_dependencies_locked(extension_id, closure, error)) {
+            return false;
+        }
+
+        return resolve_nodes_locked(closure, ordered_ids, error);
+    }
+
+    bool get_dependencies(const std::string& extension_id,
+                          std::vector<std::string>& dependencies,
+                          std::string& error) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        dependencies = it->second.dependencies;
+        std::sort(dependencies.begin(), dependencies.end());
+        error.clear();
+        return true;
+    }
+
+    bool get_dependents(const std::string& extension_id,
+                        std::vector<std::string>& dependents,
+                        std::string& error) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (records_.find(extension_id) == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        dependents.clear();
+        for (const auto& pair : records_) {
+            const auto& deps = pair.second.dependencies;
+            if (std::find(deps.begin(), deps.end(), extension_id) != deps.end()) {
+                dependents.push_back(pair.first);
+            }
+        }
+
+        std::sort(dependents.begin(), dependents.end());
+        error.clear();
+        return true;
+    }
+
     bool load_extension(const std::string& extension_id,
                         std::string& error) override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -221,6 +291,18 @@ public:
             record.lifecycle_state != ExtensionLifecycleState::Disabled) {
             error = "invalid-state-transition";
             return false;
+        }
+
+        for (const auto& dependency_id : record.dependencies) {
+            auto dep_it = records_.find(dependency_id);
+            if (dep_it == records_.end()) {
+                error = "dependency-not-found";
+                return false;
+            }
+            if (dep_it->second.lifecycle_state != ExtensionLifecycleState::Enabled) {
+                error = "dependency-resolution-failed";
+                return false;
+            }
         }
 
         const ExtensionLifecycleState prior = record.lifecycle_state;
@@ -334,12 +416,148 @@ public:
         lifecycle_fail_step_ = step;
     }
 
+    bool set_dependencies_for_tests(const std::string& extension_id,
+                                    const std::vector<std::string>& dependencies,
+                                    std::string& error) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        it->second.dependencies = dependencies;
+        error.clear();
+        return true;
+    }
+
     void reset_lifecycle_fail_step_for_tests() {
         std::lock_guard<std::mutex> lock(mutex_);
         lifecycle_fail_step_.clear();
     }
 
 private:
+    bool collect_transitive_dependencies_locked(const std::string& extension_id,
+                                                std::set<std::string>& closure,
+                                                std::string& error) const {
+        std::set<std::string> visiting;
+        std::function<bool(const std::string&)> visit = [&](const std::string& current_id) -> bool {
+            auto it = records_.find(current_id);
+            if (it == records_.end()) {
+                error = "dependency-not-found";
+                return false;
+            }
+
+            if (closure.find(current_id) != closure.end()) {
+                return true;
+            }
+
+            if (visiting.find(current_id) != visiting.end()) {
+                error = "dependency-cycle-detected";
+                return false;
+            }
+
+            visiting.insert(current_id);
+            for (const auto& dependency_id : it->second.dependencies) {
+                if (dependency_id == current_id) {
+                    error = "dependency-self-reference";
+                    return false;
+                }
+                if (!visit(dependency_id)) {
+                    return false;
+                }
+            }
+            visiting.erase(current_id);
+            closure.insert(current_id);
+            return true;
+        };
+
+        if (!visit(extension_id)) {
+            return false;
+        }
+
+        error.clear();
+        return true;
+    }
+
+    bool resolve_nodes_locked(const std::set<std::string>& nodes,
+                              std::vector<std::string>& ordered_ids,
+                              std::string& error) const {
+        ordered_ids.clear();
+
+        std::unordered_map<std::string, std::size_t> indegree;
+        std::unordered_map<std::string, std::set<std::string>> adjacency;
+        for (const auto& id : nodes) {
+            indegree[id] = 0;
+            adjacency[id] = {};
+        }
+
+        for (const auto& id : nodes) {
+            auto it = records_.find(id);
+            if (it == records_.end()) {
+                error = "dependency-resolution-failed";
+                return false;
+            }
+
+            for (const auto& dependency_id : it->second.dependencies) {
+                if (dependency_id == id) {
+                    error = "dependency-self-reference";
+                    return false;
+                }
+
+                if (records_.find(dependency_id) == records_.end()) {
+                    error = "dependency-not-found";
+                    return false;
+                }
+
+                if (nodes.find(dependency_id) == nodes.end()) {
+                    continue;
+                }
+
+                if (adjacency[dependency_id].insert(id).second) {
+                    indegree[id] += 1;
+                }
+            }
+        }
+
+        std::set<std::string> ready;
+        for (const auto& pair : indegree) {
+            if (pair.second == 0) {
+                ready.insert(pair.first);
+            }
+        }
+
+        while (!ready.empty()) {
+            const std::string next = *ready.begin();
+            ready.erase(ready.begin());
+            ordered_ids.push_back(next);
+
+            for (const auto& dependent : adjacency[next]) {
+                auto dep_it = indegree.find(dependent);
+                if (dep_it == indegree.end()) {
+                    error = "dependency-resolution-failed";
+                    return false;
+                }
+
+                if (dep_it->second > 0) {
+                    dep_it->second -= 1;
+                    if (dep_it->second == 0) {
+                        ready.insert(dependent);
+                    }
+                }
+            }
+        }
+
+        if (ordered_ids.size() != nodes.size()) {
+            ordered_ids.clear();
+            error = "dependency-cycle-detected";
+            return false;
+        }
+
+        error.clear();
+        return true;
+    }
+
     mutable std::mutex mutex_;
     std::unordered_map<std::string, ExtensionRecord> records_;
     std::string lifecycle_fail_step_;
@@ -370,6 +588,12 @@ void set_extension_lifecycle_fail_step_for_tests(const std::string& step) {
 
 void reset_extension_lifecycle_fail_step_for_tests() {
     ensure_registry().reset_lifecycle_fail_step_for_tests();
+}
+
+bool set_extension_dependencies_for_tests(const std::string& extension_id,
+                                          const std::vector<std::string>& dependencies,
+                                          std::string& error) {
+    return ensure_registry().set_dependencies_for_tests(extension_id, dependencies, error);
 }
 
 }  // namespace sentinel::core

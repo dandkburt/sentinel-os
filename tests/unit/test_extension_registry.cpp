@@ -280,4 +280,151 @@ TEST_F(ExtensionRegistryRealTest, FailureInjectionRollsBackStateAndKeepsSnapshot
     EXPECT_EQ(after_failed_disable[0].source_path, before[0].source_path);
 }
 
+TEST_F(ExtensionRegistryRealTest, DependencyResolutionAcyclicGraphIsDeterministic) {
+    auto& registry = get_extension_registry_interface();
+
+    ASSERT_TRUE(write_text_file(temp_dir_ / "a.manifest", make_manifest("a.ext", "1.0.0", "A", "./a.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "b.manifest", make_manifest("b.ext", "1.0.0", "B", "./b.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "c.manifest", make_manifest("c.ext", "1.0.0", "C", "./c.js", "[]", "[a.ext]")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "d.manifest", make_manifest("d.ext", "1.0.0", "D", "./d.js", "[]", "[a.ext]")));
+
+    std::vector<std::string> non_fatal;
+    std::string error;
+    ASSERT_TRUE(registry.discover_extensions_in_directory(temp_dir_.string(), non_fatal, error));
+    ASSERT_TRUE(non_fatal.empty());
+
+    std::vector<std::string> order_one;
+    std::vector<std::string> order_two;
+    ASSERT_TRUE(registry.resolve_extension_dependencies(order_one, error));
+    ASSERT_TRUE(registry.resolve_extension_dependencies(order_two, error));
+    EXPECT_EQ(order_one, order_two);
+    ASSERT_EQ(order_one.size(), 4u);
+    EXPECT_EQ(order_one[0], "a.ext");
+    EXPECT_EQ(order_one[1], "b.ext");
+    EXPECT_EQ(order_one[2], "c.ext");
+    EXPECT_EQ(order_one[3], "d.ext");
+}
+
+TEST_F(ExtensionRegistryRealTest, DependencyResolutionMissingDependencyFailsDeterministically) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "missing-dep.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("missing.dep.ext", "1.0.0", "Missing", "./m.js")));
+
+    std::string error;
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+    ASSERT_TRUE(set_extension_dependencies_for_tests("missing.dep.ext", {"ghost.ext"}, error));
+
+    std::vector<std::string> order;
+    ASSERT_FALSE(registry.resolve_extension_dependencies_for_target("missing.dep.ext", order, error));
+    EXPECT_EQ(error, "dependency-not-found");
+}
+
+TEST_F(ExtensionRegistryRealTest, DependencyResolutionSelfReferenceRejectedDeterministically) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "self.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("self.ext", "1.0.0", "Self", "./self.js")));
+
+    std::string error;
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+    ASSERT_TRUE(set_extension_dependencies_for_tests("self.ext", {"self.ext"}, error));
+
+    std::vector<std::string> order;
+    ASSERT_FALSE(registry.resolve_extension_dependencies_for_target("self.ext", order, error));
+    EXPECT_EQ(error, "dependency-self-reference");
+}
+
+TEST_F(ExtensionRegistryRealTest, DependencyResolutionDetectsSimpleAndMultiNodeCycles) {
+    auto& registry = get_extension_registry_interface();
+
+    ASSERT_TRUE(write_text_file(temp_dir_ / "a.manifest", make_manifest("cycle.a", "1.0.0", "A", "./a.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "b.manifest", make_manifest("cycle.b", "1.0.0", "B", "./b.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "c.manifest", make_manifest("cycle.c", "1.0.0", "C", "./c.js")));
+
+    std::vector<std::string> non_fatal;
+    std::string error;
+    ASSERT_TRUE(registry.discover_extensions_in_directory(temp_dir_.string(), non_fatal, error));
+    ASSERT_TRUE(non_fatal.empty());
+
+    ASSERT_TRUE(set_extension_dependencies_for_tests("cycle.a", {"cycle.b"}, error));
+    ASSERT_TRUE(set_extension_dependencies_for_tests("cycle.b", {"cycle.a"}, error));
+
+    std::vector<std::string> order;
+    ASSERT_FALSE(registry.resolve_extension_dependencies(order, error));
+    EXPECT_EQ(error, "dependency-cycle-detected");
+
+    ASSERT_TRUE(set_extension_dependencies_for_tests("cycle.b", {"cycle.c"}, error));
+    ASSERT_TRUE(set_extension_dependencies_for_tests("cycle.c", {"cycle.a"}, error));
+
+    ASSERT_FALSE(registry.resolve_extension_dependencies(order, error));
+    EXPECT_EQ(error, "dependency-cycle-detected");
+}
+
+TEST_F(ExtensionRegistryRealTest, DependencyResolutionTargetedClosureIsDeterministic) {
+    auto& registry = get_extension_registry_interface();
+
+    ASSERT_TRUE(write_text_file(temp_dir_ / "a.manifest", make_manifest("target.a", "1.0.0", "A", "./a.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "b.manifest", make_manifest("target.b", "1.0.0", "B", "./b.js", "[]", "[target.a]")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "c.manifest", make_manifest("target.c", "1.0.0", "C", "./c.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "d.manifest", make_manifest("target.d", "1.0.0", "D", "./d.js", "[]", "[target.b, target.c]")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "e.manifest", make_manifest("target.e", "1.0.0", "E", "./e.js")));
+
+    std::vector<std::string> non_fatal;
+    std::string error;
+    ASSERT_TRUE(registry.discover_extensions_in_directory(temp_dir_.string(), non_fatal, error));
+    ASSERT_TRUE(non_fatal.empty());
+
+    std::vector<std::string> target_order;
+    ASSERT_TRUE(registry.resolve_extension_dependencies_for_target("target.d", target_order, error));
+    ASSERT_EQ(target_order.size(), 4u);
+    EXPECT_EQ(target_order[0], "target.a");
+    EXPECT_EQ(target_order[1], "target.b");
+    EXPECT_EQ(target_order[2], "target.c");
+    EXPECT_EQ(target_order[3], "target.d");
+
+    std::vector<std::string> missing_order;
+    ASSERT_FALSE(registry.resolve_extension_dependencies_for_target("missing.target", missing_order, error));
+    EXPECT_EQ(error, "extension-not-found");
+}
+
+TEST_F(ExtensionRegistryRealTest, LifecycleDependencyIntegrationRespectsOrderAndFailureStability) {
+    auto& registry = get_extension_registry_interface();
+
+    ASSERT_TRUE(write_text_file(temp_dir_ / "core.manifest", make_manifest("dep.core", "1.0.0", "Core", "./core.js")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "feature.manifest", make_manifest("dep.feature", "1.0.0", "Feature", "./feature.js", "[]", "[dep.core]")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "ui.manifest", make_manifest("dep.ui", "1.0.0", "Ui", "./ui.js", "[]", "[dep.feature]")));
+    ASSERT_TRUE(write_text_file(temp_dir_ / "ind.manifest", make_manifest("independent", "1.0.0", "Independent", "./ind.js")));
+
+    std::vector<std::string> non_fatal;
+    std::string error;
+    ASSERT_TRUE(registry.discover_extensions_in_directory(temp_dir_.string(), non_fatal, error));
+    ASSERT_TRUE(non_fatal.empty());
+
+    ASSERT_TRUE(registry.load_extension("independent", error));
+    ASSERT_TRUE(registry.enable_extension("independent", error));
+
+    ASSERT_TRUE(registry.load_extension("dep.ui", error));
+    ASSERT_FALSE(registry.enable_extension("dep.ui", error));
+    EXPECT_EQ(error, "dependency-resolution-failed");
+
+    std::vector<std::string> plan;
+    ASSERT_TRUE(registry.resolve_extension_dependencies_for_target("dep.ui", plan, error));
+    ASSERT_EQ(plan.size(), 3u);
+    EXPECT_EQ(plan[0], "dep.core");
+    EXPECT_EQ(plan[1], "dep.feature");
+    EXPECT_EQ(plan[2], "dep.ui");
+
+    set_extension_lifecycle_fail_step_for_tests("enable");
+    ASSERT_TRUE(registry.load_extension(plan[0], error));
+    ASSERT_FALSE(registry.enable_extension(plan[0], error));
+    EXPECT_EQ(error, "enable-failed");
+
+    ExtensionLifecycleState stable_state = ExtensionLifecycleState::Registered;
+    ASSERT_TRUE(registry.get_extension_state("independent", stable_state, error));
+    EXPECT_EQ(stable_state, ExtensionLifecycleState::Enabled);
+
+    reset_extension_lifecycle_fail_step_for_tests();
+}
+
 }  // namespace

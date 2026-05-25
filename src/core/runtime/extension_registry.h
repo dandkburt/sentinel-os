@@ -40,6 +40,21 @@ public:
                                                   std::vector<std::string>& non_fatal_errors,
                                                   std::string& error) = 0;
 
+    virtual bool resolve_extension_dependencies(std::vector<std::string>& ordered_ids,
+                                                std::string& error) const = 0;
+
+    virtual bool resolve_extension_dependencies_for_target(const std::string& extension_id,
+                                                           std::vector<std::string>& ordered_ids,
+                                                           std::string& error) const = 0;
+
+    virtual bool get_dependencies(const std::string& extension_id,
+                                  std::vector<std::string>& dependencies,
+                                  std::string& error) const = 0;
+
+    virtual bool get_dependents(const std::string& extension_id,
+                                std::vector<std::string>& dependents,
+                                std::string& error) const = 0;
+
     virtual bool load_extension(const std::string& extension_id,
                                 std::string& error) = 0;
 
@@ -68,5 +83,10 @@ void set_extension_lifecycle_fail_step_for_tests(const std::string& step);
 
 // Test hook: clear lifecycle failure injection.
 void reset_extension_lifecycle_fail_step_for_tests();
+
+// Test hook: override dependencies for a registered extension.
+bool set_extension_dependencies_for_tests(const std::string& extension_id,
+                                          const std::vector<std::string>& dependencies,
+                                          std::string& error);
 
 }  // namespace sentinel::core
