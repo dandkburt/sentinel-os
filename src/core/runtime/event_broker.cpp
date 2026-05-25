@@ -2,8 +2,13 @@
 
 #include "../../services/policy/policy.h"
 
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <iostream>
 #include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,8 +31,39 @@ struct SubscriptionRecord {
     RuntimeEventCallback callback;
 };
 
+struct DeliveryTarget {
+    std::string topic;
+    std::string capability_token;
+    RuntimeEventCallback callback;
+};
+
+struct PendingEvent {
+    uint64_t sequence = 0;
+    RuntimeEvent event;
+    std::vector<DeliveryTarget> targets;
+};
+
+struct BrokerShard {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<PendingEvent> queue;
+    bool processing = false;
+};
+
 class EventBrokerImpl : public IEventBroker {
 public:
+    EventBrokerImpl() {
+        start_workers();
+    }
+
+    ~EventBrokerImpl() override {
+        stop_workers();
+    }
+
+    EventDeliveryGuarantee delivery_guarantee() const override {
+        return EventDeliveryGuarantee::AtMostOnce;
+    }
+
     bool subscribe(const std::string& topic,
                    const std::string& capability_token,
                    RuntimeEventCallback callback,
@@ -80,52 +116,180 @@ public:
             return false;
         }
 
-        std::vector<SubscriptionRecord> matching_subscriptions;
+        std::vector<DeliveryTarget> matching_targets;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (const auto& subscription : subscriptions_) {
                 if (subscription.topic == topic) {
-                    matching_subscriptions.push_back(subscription);
+                    matching_targets.push_back(DeliveryTarget{
+                        subscription.topic,
+                        subscription.capability_token,
+                        subscription.callback
+                    });
                 }
             }
         }
 
-        RuntimeEvent event{topic, payload, verification.extension_id, verification.capability_scope};
-        for (const auto& subscription : matching_subscriptions) {
+        PendingEvent pending_event;
+        pending_event.sequence = next_sequence_.fetch_add(1, std::memory_order_relaxed);
+        pending_event.event = RuntimeEvent{
+            pending_event.sequence,
+            topic,
+            payload,
+            verification.extension_id,
+            verification.capability_scope
+        };
+        pending_event.targets = std::move(matching_targets);
+
+        auto& shard = shards_[select_shard(topic)];
+        {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            if (shard.queue.size() >= queue_capacity_) {
+                error = "event-queue-full";
+                return false;
+            }
+
+            shard.queue.push_back(std::move(pending_event));
+        }
+
+        shard.cv.notify_one();
+        error.clear();
+        return true;
+    }
+
+    void reset_for_tests() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            subscriptions_.clear();
+            next_sequence_.store(0, std::memory_order_relaxed);
+            queue_capacity_.store(kDefaultQueueCapacity, std::memory_order_relaxed);
+        }
+
+        for (auto& shard : shards_) {
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            shard.queue.clear();
+            shard.processing = false;
+            shard.cv.notify_all();
+        }
+    }
+
+    void set_queue_capacity_for_tests(std::size_t capacity) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_capacity_.store(capacity == 0 ? 1 : capacity, std::memory_order_relaxed);
+    }
+
+    void flush_for_tests() {
+        for (;;) {
+            bool empty = true;
+            for (auto& shard : shards_) {
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                if (shard.processing || !shard.queue.empty()) {
+                    empty = false;
+                    break;
+                }
+            }
+
+            if (empty) {
+                return;
+            }
+
+            std::this_thread::yield();
+        }
+    }
+
+private:
+    static constexpr std::size_t kDefaultWorkerCount = 4;
+    static constexpr std::size_t kDefaultQueueCapacity = 32;
+
+    void start_workers() {
+        workers_.reserve(kDefaultWorkerCount);
+        for (std::size_t shard_index = 0; shard_index < kDefaultWorkerCount; ++shard_index) {
+            workers_.emplace_back([this, shard_index]() {
+                worker_loop(shard_index);
+            });
+        }
+    }
+
+    void stop_workers() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_.store(true, std::memory_order_release);
+        }
+
+        for (auto& shard : shards_) {
+            shard.cv.notify_all();
+        }
+
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+    }
+
+    std::size_t select_shard(const std::string& topic) const {
+        return std::hash<std::string>{}(topic) % shards_.size();
+    }
+
+    void worker_loop(std::size_t shard_index) {
+        auto& shard = shards_[shard_index];
+        for (;;) {
+            PendingEvent next_event;
+            {
+                std::unique_lock<std::mutex> lock(shard.mutex);
+                shard.cv.wait(lock, [this, &shard]() {
+                    return stopping_.load(std::memory_order_acquire) || !shard.queue.empty();
+                });
+
+                if (stopping_.load(std::memory_order_acquire) && shard.queue.empty()) {
+                    return;
+                }
+
+                next_event = std::move(shard.queue.front());
+                shard.queue.pop_front();
+                shard.processing = true;
+            }
+
+            deliver_event(next_event);
+
+            {
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                shard.processing = false;
+            }
+            shard.cv.notify_all();
+        }
+    }
+
+    void deliver_event(const PendingEvent& pending_event) {
+        auto& policy_service = sentinel::services::policy::get_policy_service_interface();
+        for (const auto& target : pending_event.targets) {
             const auto subscription_verification = policy_service.capability_engine().verify_token(
-                subscription.capability_token,
-                required_topic_capability(subscription.topic));
+                target.capability_token,
+                required_topic_capability(target.topic));
             if (!subscription_verification.is_valid) {
                 continue;
             }
 
             try {
-                subscription.callback(event);
+                target.callback(pending_event.event);
             } catch (const std::exception& e) {
                 std::cerr << "Event broker callback failed: " << e.what() << std::endl;
             }
         }
-
-        error.clear();
-        return true;
     }
 
-private:
     mutable std::mutex mutex_;
     std::vector<SubscriptionRecord> subscriptions_;
+    std::array<BrokerShard, kDefaultWorkerCount> shards_;
+    std::vector<std::thread> workers_;
+    std::atomic<bool> stopping_{false};
+    std::atomic<std::size_t> queue_capacity_{kDefaultQueueCapacity};
+    std::atomic<uint64_t> next_sequence_{0};
 };
 
-EventBrokerImpl*& broker_instance() {
-    static EventBrokerImpl* instance = nullptr;
-    return instance;
-}
-
 EventBrokerImpl& ensure_broker() {
-    auto*& instance = broker_instance();
-    if (instance == nullptr) {
-        instance = new EventBrokerImpl();
-    }
-    return *instance;
+    static EventBrokerImpl instance;
+    return instance;
 }
 }  // namespace
 
@@ -135,6 +299,18 @@ IEventBroker& get_event_broker_interface() {
 
 void initialize_event_broker() {
     (void)ensure_broker();
+}
+
+void reset_event_broker_for_tests() {
+    ensure_broker().reset_for_tests();
+}
+
+void set_event_broker_queue_capacity_for_tests(std::size_t capacity) {
+    ensure_broker().set_queue_capacity_for_tests(capacity);
+}
+
+void flush_event_broker_for_tests() {
+    ensure_broker().flush_for_tests();
 }
 
 }  // namespace sentinel::core::event
