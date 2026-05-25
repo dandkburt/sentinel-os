@@ -68,6 +68,20 @@ ctest --output-on-failure -C Debug -R "IntegrationTests"
 ctest --output-on-failure --verbose
 ```
 
+## Policy Reload Verification (Quick Block)
+
+Use the unit test binary when you need direct policy reload behavior validation:
+
+```bash
+# Windows Debug output path
+./build/tests/unit/Debug/sentinel_unit_tests.exe --gtest_filter="PolicyCapabilityEngineReal.SecretProviderRotationCutoverSupportsRollback:PolicyCapabilityEngineReal.ReloadFailureTelemetryIsNonSensitive:PolicyCapabilityEngineReal.ReloadRotationTracksZeroizationEvents"
+```
+
+Expected outcomes:
+- Success/apply path: `ReloadRotationTracksZeroizationEvents` passes and telemetry ends with `reload_state == applied`.
+- Rollback path: `SecretProviderRotationCutoverSupportsRollback` passes and telemetry shows rollback activity (`rollback_events > 0`, `rollback_applies > 0`, `reload_state == rolled_back`).
+- Fail-safe retain path: `ReloadFailureTelemetryIsNonSensitive` passes and telemetry shows `reload_state == failed` with non-sensitive `last_error` (`provider-unavailable-env-fallback-disabled`).
+
 ## Build Outputs
 
 After successful build, you'll have:

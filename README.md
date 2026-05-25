@@ -38,3 +38,21 @@ Sentinel OS is a Windows-like desktop operating system project focused on secure
 - Unix-like: `./build.sh`
 
 Both entrypoints run configure, native build, CTest, managed build, and output verification.
+
+## Policy Operations Quick Reference
+
+### Reload State Meanings
+- `idle`: no reload currently in progress.
+- `reloading`: policy service is actively applying provider/environment key material.
+- `applied`: reload succeeded and new key state is active.
+- `rolled_back`: reload succeeded and a key generation decrease was applied (rollback event).
+- `failed`: reload could not apply new state and fail-safe retention remained in effect.
+
+### Fail-Safe Behavior
+- If provider loading is unavailable and `SENTINEL_POLICY_ALLOW_ENV_FALLBACK` is disabled, policy service retains the existing in-memory keys.
+- This path is explicit fail-safe retain behavior and does not switch to environment keys.
+
+### Operational Telemetry Fields
+- Provider and source counters: `provider_attempts`, `provider_successes`, `provider_failures`, `environment_loads`.
+- Reload lifecycle counters: `reload_attempts`, `reload_successes`, `reload_failures`, `rollback_events`, `rollback_applies`.
+- Safety and state fields: `fail_safe_retained_state`, `zeroization_events`, `reload_state`, `last_reload_outcome`, `last_reload_timestamp`, `last_source`, `last_error`.

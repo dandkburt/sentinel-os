@@ -49,3 +49,4 @@ The following remain native-only until explicit contracts are added:
 - Keep ABI functions narrow and versionable.
 - Keep DTOs and status codes stable across native/managed boundary.
 - Add one contract at a time and cover each with integration tests.
+- Policy signing key material remains in the native policy service and is loaded via a provider-first configuration path with controlled environment fallback, preserving native ownership of security-sensitive key lifecycle decisions.
