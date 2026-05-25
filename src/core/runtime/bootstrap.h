@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include "runtime_config.h"
 
 namespace sentinel::core {
 
@@ -86,4 +87,13 @@ namespace sentinel::core {
 
     /// @brief Initialize the core runtime (must be called before use)
     void initialize_runtime();
+
+    /// @brief Trigger runtime reconfiguration from file.
+    /// @param path Configuration file path. Empty path uses default runtime config path.
+    /// @param error Reconfiguration error code when false is returned.
+    /// @return true when runtime config is applied atomically.
+    bool trigger_runtime_reconfiguration(const std::string& path, std::string& error);
+
+    /// @brief Test hook: snapshot the currently active runtime config.
+    RuntimeConfig get_runtime_config_snapshot_for_tests();
 }

@@ -77,6 +77,36 @@ class BootstrapImpl : public IBootstrap {
 public:
     BootstrapImpl() : initialized_(false), version_("0.1.0"), runtime_config_(default_runtime_config()) {}
 
+    bool reconfigure_from_file(const std::string& path, std::string& error) {
+        const std::string resolved_path = path.empty() ? configured_runtime_config_path() : path;
+        bool applied = false;
+
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            RuntimeConfig next = runtime_config_;
+            if (!apply_runtime_reconfiguration_from_file(resolved_path, next, error)) {
+                applied = false;
+            } else {
+                runtime_config_ = next;
+                applied = true;
+            }
+        }
+
+        if (!applied) {
+            fire_lifecycle_event("runtime_reconfigure_failed");
+            return false;
+        }
+
+        fire_lifecycle_event("runtime_reconfigure_applied");
+        error.clear();
+        return true;
+    }
+
+    RuntimeConfig runtime_config_snapshot() const {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return runtime_config_;
+    }
+
     BootstrapResult initialize() override {
         if (initialized_) {
             return {BootstrapStatus::Success, "Runtime already initialized"};
@@ -106,21 +136,24 @@ public:
                 return step_result;
             }
 
-            RuntimeConfig loaded_config = default_runtime_config();
-            std::string config_error;
-            if (!load_runtime_config_from_file(configured_runtime_config_path(), loaded_config, config_error)) {
-                std::cerr << "Runtime configuration parse failed; using fail-safe defaults. reason="
-                          << config_error << std::endl;
-                loaded_config = default_runtime_config();
-                config_error.clear();
-            }
+            {
+                std::lock_guard<std::mutex> lock(config_mutex_);
+                RuntimeConfig loaded_config = default_runtime_config();
+                std::string config_error;
+                if (!load_runtime_config_from_file(configured_runtime_config_path(), loaded_config, config_error)) {
+                    std::cerr << "Runtime configuration parse failed; using fail-safe defaults. reason="
+                              << config_error << std::endl;
+                    loaded_config = default_runtime_config();
+                    config_error.clear();
+                }
 
-            if (!validate_runtime_config(loaded_config, config_error)) {
-                std::cerr << "Runtime configuration validation failed; using fail-safe defaults. reason="
-                          << config_error << std::endl;
-                loaded_config = default_runtime_config();
+                if (!validate_runtime_config(loaded_config, config_error)) {
+                    std::cerr << "Runtime configuration validation failed; using fail-safe defaults. reason="
+                              << config_error << std::endl;
+                    loaded_config = default_runtime_config();
+                }
+                runtime_config_ = loaded_config;
             }
-            runtime_config_ = loaded_config;
 
             step_result = run_step("logging", []() {
                 // TODO: Wire real logging initialization.
@@ -129,7 +162,7 @@ public:
                 return step_result;
             }
 
-            if (runtime_config_.enable_policy) {
+            if (runtime_config_snapshot().enable_policy) {
                 step_result = run_step("policy", []() {
                     sentinel::services::policy::initialize_policy_service();
                 });
@@ -140,7 +173,7 @@ public:
                 fire_lifecycle_event("init_step_skipped:policy");
             }
 
-            if (runtime_config_.enable_namespace) {
+            if (runtime_config_snapshot().enable_namespace) {
                 step_result = run_step("namespace", []() {
                     sentinel::services::namespace_service::initialize_namespace_service();
                 });
@@ -151,7 +184,7 @@ public:
                 fire_lifecycle_event("init_step_skipped:namespace");
             }
 
-            if (runtime_config_.enable_event_broker) {
+            if (runtime_config_snapshot().enable_event_broker) {
                 step_result = run_step("event_broker", []() {
                     // TODO: Wire event broker registration.
                 });
@@ -234,6 +267,7 @@ private:
 
     bool initialized_;
     std::string version_;
+    mutable std::mutex config_mutex_;
     std::mutex callbacks_mutex_;
     std::mutex shutdown_mutex_;
     std::condition_variable shutdown_cv_;
@@ -297,6 +331,24 @@ public:
         return result;
     }
 
+    bool trigger_runtime_reconfiguration(const std::string& path, std::string& error) {
+        auto* concrete_bootstrap = dynamic_cast<BootstrapImpl*>(bootstrap_.get());
+        if (concrete_bootstrap == nullptr) {
+            error = "bootstrap-not-configurable";
+            return false;
+        }
+
+        return concrete_bootstrap->reconfigure_from_file(path, error);
+    }
+
+    RuntimeConfig runtime_config_snapshot_for_tests() const {
+        auto* concrete_bootstrap = dynamic_cast<BootstrapImpl*>(bootstrap_.get());
+        if (concrete_bootstrap == nullptr) {
+            return default_runtime_config();
+        }
+        return concrete_bootstrap->runtime_config_snapshot();
+    }
+
 private:
     std::unique_ptr<IBootstrap> bootstrap_;
     std::unordered_map<std::string, void*> subsystems_;
@@ -320,6 +372,16 @@ void initialize_runtime() {
 
 IRuntime& get_runtime_interface() {
     return get_runtime();
+}
+
+bool trigger_runtime_reconfiguration(const std::string& path, std::string& error) {
+    auto& runtime = get_runtime();
+    return runtime.trigger_runtime_reconfiguration(path, error);
+}
+
+RuntimeConfig get_runtime_config_snapshot_for_tests() {
+    auto& runtime = get_runtime();
+    return runtime.runtime_config_snapshot_for_tests();
 }
 
 }  // namespace sentinel::core

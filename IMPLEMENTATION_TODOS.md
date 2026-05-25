@@ -256,8 +256,8 @@ Each TODO is scoped to a specific component and layer.
 ### Configuration System
 - [x] Load runtime configuration from TOML/JSON
 - [x] Configuration validation and defaults
-- [ ] Runtime reconfiguration support
-- [ ] Configuration versioning
+- [x] Runtime reconfiguration support
+- [x] Configuration versioning
 
 ### Event System
 - [ ] Pub/Sub event broker with capability filtering

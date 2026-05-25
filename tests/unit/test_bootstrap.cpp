@@ -181,6 +181,14 @@ TEST(RuntimeConfigTest, ParseInvalidConfigFailsValidation) {
     EXPECT_FALSE(error.empty());
 }
 
+TEST(RuntimeConfigTest, UnsupportedVersionIsRejected) {
+    const std::string text = "version = 2\n";
+    RuntimeConfig config;
+    std::string error;
+    EXPECT_FALSE(parse_runtime_config_text(text, config, error));
+    EXPECT_EQ(error, "unsupported-config-version");
+}
+
 TEST(RuntimeConfigTest, MissingConfigFileUsesDefaults) {
     RuntimeConfig config;
     std::string error;
@@ -243,6 +251,65 @@ TEST_F(BootstrapRealTest, BootstrapLoadsConfigAndSkipsDisabledSteps) {
 #else
     unsetenv("SENTINEL_RUNTIME_CONFIG_PATH");
 #endif
+    std::error_code ignored;
+    std::filesystem::remove(config_path, ignored);
+}
+
+TEST_F(BootstrapRealTest, RuntimeReconfigurationSuccessAppliesCandidate) {
+    auto& bootstrap = get_runtime_interface().bootstrap();
+    ASSERT_TRUE(bootstrap.initialize().is_success());
+
+    const auto config_path = std::filesystem::temp_directory_path() / "sentinel_runtime_reconfig_success.conf";
+    {
+        std::ofstream out(config_path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "version = 1\n";
+        out << "log_level = debug\n";
+        out << "enable_event_broker = false\n";
+        out << "shutdown_timeout_ms = 9000\n";
+    }
+
+    std::string error;
+    EXPECT_TRUE(trigger_runtime_reconfiguration(config_path.string(), error));
+    EXPECT_TRUE(error.empty());
+
+    const RuntimeConfig snapshot = get_runtime_config_snapshot_for_tests();
+    EXPECT_EQ(snapshot.config_version, 1u);
+    EXPECT_EQ(snapshot.log_level, "debug");
+    EXPECT_FALSE(snapshot.enable_event_broker);
+    EXPECT_EQ(snapshot.shutdown_timeout_ms, 9000u);
+
+    std::error_code ignored;
+    std::filesystem::remove(config_path, ignored);
+}
+
+TEST_F(BootstrapRealTest, RuntimeReconfigurationRejectsInvalidCandidateAndRollsBack) {
+    auto& bootstrap = get_runtime_interface().bootstrap();
+    ASSERT_TRUE(bootstrap.initialize().is_success());
+
+    const RuntimeConfig before = get_runtime_config_snapshot_for_tests();
+
+    const auto config_path = std::filesystem::temp_directory_path() / "sentinel_runtime_reconfig_invalid.conf";
+    {
+        std::ofstream out(config_path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "version = 1\n";
+        out << "log_level = debug\n";
+        out << "shutdown_timeout_ms = 0\n";
+    }
+
+    std::string error;
+    EXPECT_FALSE(trigger_runtime_reconfiguration(config_path.string(), error));
+    EXPECT_FALSE(error.empty());
+
+    const RuntimeConfig after = get_runtime_config_snapshot_for_tests();
+    EXPECT_EQ(after.config_version, before.config_version);
+    EXPECT_EQ(after.log_level, before.log_level);
+    EXPECT_EQ(after.enable_policy, before.enable_policy);
+    EXPECT_EQ(after.enable_namespace, before.enable_namespace);
+    EXPECT_EQ(after.enable_event_broker, before.enable_event_broker);
+    EXPECT_EQ(after.shutdown_timeout_ms, before.shutdown_timeout_ms);
+
     std::error_code ignored;
     std::filesystem::remove(config_path, ignored);
 }

@@ -5,6 +5,7 @@
 namespace sentinel::core {
 
 struct RuntimeConfig {
+    unsigned int config_version = 1;
     std::string log_level = "info";
     bool enable_policy = true;
     bool enable_namespace = true;
@@ -23,5 +24,9 @@ bool load_runtime_config_from_file(const std::string& path, RuntimeConfig& out, 
 bool apply_runtime_reconfiguration(const RuntimeConfig& candidate,
                                    RuntimeConfig& current,
                                    std::string& error);
+
+bool apply_runtime_reconfiguration_from_file(const std::string& path,
+                                             RuntimeConfig& current,
+                                             std::string& error);
 
 }  // namespace sentinel::core

@@ -9,6 +9,7 @@
 namespace sentinel::core {
 
 namespace {
+constexpr unsigned int kSupportedConfigVersion = 1;
 
 void trim_in_place(std::string& value) {
     auto not_space = [](unsigned char c) { return !std::isspace(c); };
@@ -81,6 +82,11 @@ RuntimeConfig default_runtime_config() {
 }
 
 bool validate_runtime_config(const RuntimeConfig& config, std::string& error) {
+    if (config.config_version != kSupportedConfigVersion) {
+        error = "unsupported-config-version";
+        return false;
+    }
+
     static const std::set<std::string> kAllowedLevels = {
         "trace", "debug", "info", "warn", "error"
     };
@@ -113,7 +119,15 @@ bool parse_runtime_config_text(const std::string& text, RuntimeConfig& out, std:
         }
 
         const std::string normalized_key = to_lower_ascii(key);
-        if (normalized_key == "log_level") {
+        if (normalized_key == "version" || normalized_key == "config_version") {
+            try {
+                const unsigned long parsed = std::stoul(value);
+                candidate.config_version = static_cast<unsigned int>(parsed);
+            } catch (...) {
+                error = "invalid-config-version";
+                return false;
+            }
+        } else if (normalized_key == "log_level") {
             candidate.log_level = to_lower_ascii(value);
         } else if (normalized_key == "enable_policy") {
             bool parsed = false;
@@ -178,13 +192,25 @@ bool load_runtime_config_from_file(const std::string& path, RuntimeConfig& out, 
 bool apply_runtime_reconfiguration(const RuntimeConfig& candidate,
                                    RuntimeConfig& current,
                                    std::string& error) {
-    if (!validate_runtime_config(candidate, error)) {
+    const RuntimeConfig next = candidate;
+    if (!validate_runtime_config(next, error)) {
         return false;
     }
 
-    current = candidate;
+    current = next;
     error.clear();
     return true;
+}
+
+bool apply_runtime_reconfiguration_from_file(const std::string& path,
+                                             RuntimeConfig& current,
+                                             std::string& error) {
+    RuntimeConfig candidate = default_runtime_config();
+    if (!load_runtime_config_from_file(path, candidate, error)) {
+        return false;
+    }
+
+    return apply_runtime_reconfiguration(candidate, current, error);
 }
 
 }  // namespace sentinel::core
