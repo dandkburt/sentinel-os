@@ -27,6 +27,7 @@ endif()
 add_executable(sentinel_unit_tests
     test_bootstrap.cpp
     test_event_broker.cpp
+    test_extension_manifest.cpp
     test_policy.cpp
     test_namespace.cpp
     test_shell.cpp

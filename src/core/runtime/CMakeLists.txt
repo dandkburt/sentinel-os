@@ -3,6 +3,8 @@ add_library(core_runtime STATIC
     bootstrap.h
     event_broker.cpp
     event_broker.h
+    extension_manifest.cpp
+    extension_manifest.h
     runtime_config.cpp
     runtime_config.h
 )

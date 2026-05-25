@@ -266,7 +266,7 @@ Each TODO is scoped to a specific component and layer.
 - [x] Event ordering and sequencing
 
 ### Extension System
-- [ ] Extension manifest format and parser
+- [x] Extension manifest format and parser
 - [ ] Extension registration and discovery
 - [ ] Extension lifecycle management (load, enable, disable, unload)
 - [ ] Extension dependency resolution
