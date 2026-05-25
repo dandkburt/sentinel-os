@@ -26,6 +26,7 @@ endif()
 # Unit test executable
 add_executable(sentinel_unit_tests
     test_bootstrap.cpp
+    test_event_broker.cpp
     test_policy.cpp
     test_namespace.cpp
     test_shell.cpp

@@ -260,7 +260,7 @@ Each TODO is scoped to a specific component and layer.
 - [x] Configuration versioning
 
 ### Event System
-- [ ] Pub/Sub event broker with capability filtering
+- [x] Pub/Sub event broker with capability filtering
 - [ ] Event routing and delivery guarantees
 - [ ] Async event handling with thread pool
 - [ ] Event ordering and sequencing

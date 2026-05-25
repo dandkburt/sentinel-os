@@ -1,4 +1,5 @@
 #include "bootstrap.h"
+#include "event_broker.h"
 #include "runtime_config.h"
 #include "../../services/policy/policy.h"
 #include "../../services/namespace/namespace.h"
@@ -186,7 +187,7 @@ public:
 
             if (runtime_config_snapshot().enable_event_broker) {
                 step_result = run_step("event_broker", []() {
-                    // TODO: Wire event broker registration.
+                    sentinel::core::event::initialize_event_broker();
                 });
                 if (!step_result.is_success()) {
                     return step_result;

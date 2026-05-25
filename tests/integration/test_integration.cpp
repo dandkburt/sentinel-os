@@ -5,6 +5,8 @@
 #include "shell.h"
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 using namespace sentinel::core;
 using namespace sentinel::services::policy;
@@ -360,6 +362,33 @@ TEST(RuntimeIntegration, SubsystemRegistrationDeniedWithoutValidToken) {
 
     void* retrieved = runtime.get_subsystem("secured_subsystem", "invalid_token|secured_subsystem:access");
     EXPECT_EQ(retrieved, nullptr);
+}
+
+TEST(RuntimeIntegration, RuntimeReconfigurationTriggerAppliesCandidate) {
+    initialize_runtime();
+    auto& bootstrap = get_runtime_interface().bootstrap();
+    ASSERT_TRUE(bootstrap.initialize().is_success());
+
+    const auto config_path = std::filesystem::temp_directory_path() / "sentinel_runtime_integration_reconfig.conf";
+    {
+        std::ofstream out(config_path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "version = 1\n";
+        out << "log_level = warn\n";
+        out << "enable_event_broker = false\n";
+    }
+
+    std::string error;
+    EXPECT_TRUE(trigger_runtime_reconfiguration(config_path.string(), error));
+    EXPECT_TRUE(error.empty());
+
+    const auto snapshot = get_runtime_config_snapshot_for_tests();
+    EXPECT_EQ(snapshot.config_version, 1u);
+    EXPECT_EQ(snapshot.log_level, "warn");
+    EXPECT_FALSE(snapshot.enable_event_broker);
+
+    std::error_code ignored;
+    std::filesystem::remove(config_path, ignored);
 }
 
 /// @brief Integration test: Capability token workflow
