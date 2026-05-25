@@ -82,6 +82,8 @@ public:
 
 // Public API for accessing the global runtime instance
 namespace sentinel::core {
+using RuntimeEnvLookupForTests = std::string (*)(const std::string& name);
+
     /// @brief Get the global runtime instance
     IRuntime& get_runtime_interface();
 
@@ -96,4 +98,10 @@ namespace sentinel::core {
 
     /// @brief Test hook: snapshot the currently active runtime config.
     RuntimeConfig get_runtime_config_snapshot_for_tests();
+
+    /// @brief Test hook: override environment lookup used by runtime bootstrap.
+    void set_runtime_env_lookup_for_tests(RuntimeEnvLookupForTests lookup);
+
+    /// @brief Test hook: reset runtime environment lookup override.
+    void reset_runtime_env_lookup_for_tests();
 }

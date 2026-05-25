@@ -12,6 +12,8 @@
 namespace sentinel::shell::desktop {
 
 namespace {
+DesktopEnvLookupForTests g_desktop_env_lookup_for_tests = nullptr;
+
 constexpr const char* kDesktopBootstrapFailStepEnv = "SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP";
 constexpr const char* kDesktopWindowCreateFailEnv = "SENTINEL_DESKTOP_WINDOW_CREATE_FAIL";
 
@@ -24,6 +26,10 @@ enum class DesktopLifecycleState {
 };
 
 std::string read_env_var(const char* name) {
+    if (g_desktop_env_lookup_for_tests != nullptr) {
+        return g_desktop_env_lookup_for_tests(name == nullptr ? std::string() : std::string(name));
+    }
+
 #ifdef _WIN32
     char* value = nullptr;
     size_t len = 0;
@@ -406,6 +412,14 @@ void initialize_desktop_shell() {
 
 IDesktopShell& get_desktop_shell_interface() {
     return get_desktop_shell();
+}
+
+void set_desktop_env_lookup_for_tests(DesktopEnvLookupForTests lookup) {
+    g_desktop_env_lookup_for_tests = lookup;
+}
+
+void reset_desktop_env_lookup_for_tests() {
+    g_desktop_env_lookup_for_tests = nullptr;
 }
 
 }  // namespace sentinel::shell::desktop

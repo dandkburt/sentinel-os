@@ -7,8 +7,38 @@
 #include <cstdlib>
 #include <fstream>
 #include <filesystem>
+#include <unordered_map>
 
 using namespace sentinel::core;
+
+namespace {
+
+bool g_fake_runtime_config_read_fail = false;
+std::string g_fake_runtime_config_text;
+
+bool fake_runtime_config_loader(const std::string& path, std::string& content, std::string& error) {
+    (void)path;
+    if (g_fake_runtime_config_read_fail) {
+        error = "mock-read-failed";
+        return false;
+    }
+
+    content = g_fake_runtime_config_text;
+    error.clear();
+    return true;
+}
+
+std::unordered_map<std::string, std::string> g_runtime_env_for_tests;
+
+std::string fake_runtime_env_lookup(const std::string& name) {
+    auto it = g_runtime_env_for_tests.find(name);
+    if (it == g_runtime_env_for_tests.end()) {
+        return "";
+    }
+    return it->second;
+}
+
+}  // namespace
 
 class BootstrapTest : public ::testing::Test {
 protected:
@@ -76,6 +106,10 @@ TEST_F(BootstrapTest, DoubleInitializeIsIdempotent) {
 class BootstrapRealTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        reset_runtime_config_file_loader_for_tests();
+        reset_runtime_env_lookup_for_tests();
+        g_runtime_env_for_tests.clear();
+
         initialize_runtime();
         auto& bootstrap = get_runtime_interface().bootstrap();
         (void)bootstrap.shutdown();
@@ -87,6 +121,10 @@ protected:
     }
 
     void TearDown() override {
+        reset_runtime_config_file_loader_for_tests();
+        reset_runtime_env_lookup_for_tests();
+        g_runtime_env_for_tests.clear();
+
         auto& bootstrap = get_runtime_interface().bootstrap();
         (void)bootstrap.shutdown();
 #ifdef _WIN32
@@ -202,6 +240,40 @@ TEST(RuntimeConfigTest, MissingConfigFileUsesDefaults) {
     EXPECT_EQ(config.shutdown_timeout_ms, defaults.shutdown_timeout_ms);
 }
 
+TEST(RuntimeConfigTest, FileLoaderSeamReadFailureIsDeterministic) {
+    set_runtime_config_file_loader_for_tests(fake_runtime_config_loader);
+    g_fake_runtime_config_read_fail = true;
+    g_fake_runtime_config_text.clear();
+
+    RuntimeConfig config = default_runtime_config();
+    std::string error;
+    EXPECT_FALSE(load_runtime_config_from_file("mock://runtime.conf", config, error));
+    EXPECT_EQ(error, "mock-read-failed");
+
+    g_fake_runtime_config_read_fail = false;
+    reset_runtime_config_file_loader_for_tests();
+}
+
+TEST(RuntimeConfigTest, FileLoaderSeamCanSupplyConfigTextWithoutFilesystem) {
+    set_runtime_config_file_loader_for_tests(fake_runtime_config_loader);
+    g_fake_runtime_config_read_fail = false;
+    g_fake_runtime_config_text =
+        "version = 1\n"
+        "log_level = error\n"
+        "enable_policy = false\n"
+        "shutdown_timeout_ms = 4321\n";
+
+    RuntimeConfig config;
+    std::string error;
+    ASSERT_TRUE(load_runtime_config_from_file("mock://runtime.conf", config, error));
+    EXPECT_EQ(config.log_level, "error");
+    EXPECT_FALSE(config.enable_policy);
+    EXPECT_EQ(config.shutdown_timeout_ms, 4321u);
+
+    g_fake_runtime_config_text.clear();
+    reset_runtime_config_file_loader_for_tests();
+}
+
 TEST_F(BootstrapRealTest, BootstrapLoadsConfigAndSkipsDisabledSteps) {
     auto& bootstrap = get_runtime_interface().bootstrap();
 
@@ -312,4 +384,20 @@ TEST_F(BootstrapRealTest, RuntimeReconfigurationRejectsInvalidCandidateAndRollsB
 
     std::error_code ignored;
     std::filesystem::remove(config_path, ignored);
+}
+
+TEST_F(BootstrapRealTest, RuntimeEnvLookupSeamControlsFailureInjectionDeterministically) {
+    auto& bootstrap = get_runtime_interface().bootstrap();
+
+    g_runtime_env_for_tests["SENTINEL_BOOTSTRAP_FAIL_STEP"] = "policy";
+    set_runtime_env_lookup_for_tests(fake_runtime_env_lookup);
+
+    auto failed = bootstrap.initialize();
+    EXPECT_EQ(failed.status, BootstrapStatus::InitializationFailed);
+    EXPECT_FALSE(bootstrap.is_ready());
+
+    g_runtime_env_for_tests.clear();
+    auto recovered = bootstrap.initialize();
+    EXPECT_TRUE(recovered.is_success());
+    EXPECT_TRUE(bootstrap.is_ready());
 }

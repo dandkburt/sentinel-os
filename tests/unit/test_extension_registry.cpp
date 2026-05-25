@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 using namespace sentinel::core;
 
@@ -32,12 +33,56 @@ bool write_text_file(const std::filesystem::path& path, const std::string& text)
     return true;
 }
 
+std::unordered_map<std::string, std::string> g_manifest_text_by_path;
+std::vector<std::string> g_enumerated_manifest_paths;
+std::string g_fake_manifest_loader_error;
+std::string g_fake_enumerator_error;
+
+bool fake_manifest_text_loader(const std::string& manifest_path,
+                               std::string& manifest_text,
+                               std::string& error) {
+    if (!g_fake_manifest_loader_error.empty()) {
+        error = g_fake_manifest_loader_error;
+        return false;
+    }
+
+    auto it = g_manifest_text_by_path.find(manifest_path);
+    if (it == g_manifest_text_by_path.end()) {
+        error = "source-not-found";
+        return false;
+    }
+
+    manifest_text = it->second;
+    error.clear();
+    return true;
+}
+
+bool fake_manifest_path_enumerator(const std::string& directory_path,
+                                   std::vector<std::string>& manifest_paths,
+                                   std::string& error) {
+    (void)directory_path;
+    if (!g_fake_enumerator_error.empty()) {
+        error = g_fake_enumerator_error;
+        return false;
+    }
+
+    manifest_paths = g_enumerated_manifest_paths;
+    error.clear();
+    return true;
+}
+
 class ExtensionRegistryRealTest : public ::testing::Test {
 protected:
     void SetUp() override {
         initialize_extension_registry();
         reset_extension_registry_for_tests();
         reset_extension_lifecycle_fail_step_for_tests();
+        reset_extension_manifest_text_loader_for_tests();
+        reset_extension_manifest_path_enumerator_for_tests();
+        g_manifest_text_by_path.clear();
+        g_enumerated_manifest_paths.clear();
+        g_fake_manifest_loader_error.clear();
+        g_fake_enumerator_error.clear();
 
         temp_dir_ = std::filesystem::temp_directory_path() / "sentinel_extension_registry_tests";
         std::error_code ec;
@@ -47,6 +92,12 @@ protected:
     }
 
     void TearDown() override {
+        reset_extension_manifest_text_loader_for_tests();
+        reset_extension_manifest_path_enumerator_for_tests();
+        g_manifest_text_by_path.clear();
+        g_enumerated_manifest_paths.clear();
+        g_fake_manifest_loader_error.clear();
+        g_fake_enumerator_error.clear();
         reset_extension_lifecycle_fail_step_for_tests();
         reset_extension_registry_for_tests();
         std::error_code ec;
@@ -137,6 +188,42 @@ TEST_F(ExtensionRegistryRealTest, DiscoverySkipsInvalidManifestAndReportsError) 
     ASSERT_EQ(snapshot.size(), 2u);
     EXPECT_EQ(snapshot[0].id, "good.a");
     EXPECT_EQ(snapshot[1].id, "good.b");
+}
+
+TEST_F(ExtensionRegistryRealTest, ManifestLoaderSeamDeterministicReadFailure) {
+    auto& registry = get_extension_registry_interface();
+    set_extension_manifest_text_loader_for_tests(fake_manifest_text_loader);
+    g_fake_manifest_loader_error = "source-not-readable";
+
+    std::string error;
+    ASSERT_FALSE(registry.register_extension_from_manifest_path("mock://readfail.manifest", error));
+    EXPECT_EQ(error, "source-not-readable");
+}
+
+TEST_F(ExtensionRegistryRealTest, DiscoverySeamsSupportVirtualManifestsAndNotFoundCase) {
+    auto& registry = get_extension_registry_interface();
+    set_extension_manifest_text_loader_for_tests(fake_manifest_text_loader);
+    set_extension_manifest_path_enumerator_for_tests(fake_manifest_path_enumerator);
+
+    const std::string alpha_path = "mock://extensions/alpha.manifest";
+    const std::string beta_path = "mock://extensions/beta.manifest";
+    const std::string missing_path = "mock://extensions/missing.manifest";
+
+    g_manifest_text_by_path[alpha_path] = make_manifest("alpha.virtual", "1.0.0", "Alpha Virtual", "./alpha.js");
+    g_manifest_text_by_path[beta_path] = make_manifest("beta.virtual", "1.0.0", "Beta Virtual", "./beta.js");
+    g_enumerated_manifest_paths = {beta_path, missing_path, alpha_path};
+
+    std::vector<std::string> non_fatal_errors;
+    std::string error;
+    ASSERT_TRUE(registry.discover_extensions_in_directory("mock://extensions", non_fatal_errors, error));
+    EXPECT_TRUE(error.empty());
+    ASSERT_EQ(non_fatal_errors.size(), 1u);
+    EXPECT_EQ(non_fatal_errors[0], "missing.manifest:source-not-found");
+
+    const auto snapshot = registry.list_registered_extensions();
+    ASSERT_EQ(snapshot.size(), 2u);
+    EXPECT_EQ(snapshot[0].id, "alpha.virtual");
+    EXPECT_EQ(snapshot[1].id, "beta.virtual");
 }
 
 TEST_F(ExtensionRegistryRealTest, SnapshotDoesNotMutateOnFailedRegistration) {

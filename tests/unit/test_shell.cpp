@@ -6,6 +6,20 @@
 
 using namespace sentinel::shell::desktop;
 
+namespace {
+
+std::unordered_map<std::string, std::string> g_desktop_env_for_tests;
+
+std::string fake_desktop_env_lookup(const std::string& name) {
+    auto it = g_desktop_env_for_tests.find(name);
+    if (it == g_desktop_env_for_tests.end()) {
+        return "";
+    }
+    return it->second;
+}
+
+}  // namespace
+
 class WindowManagerTest : public ::testing::Test {
 public:
     class MockWindowManager : public IWindowManager {
@@ -261,6 +275,8 @@ TEST_F(DesktopShellTest, ShowNotification) {
 class DesktopShellRealTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        reset_desktop_env_lookup_for_tests();
+        g_desktop_env_for_tests.clear();
         initialize_desktop_shell();
         auto& shell = get_desktop_shell_interface();
         (void)shell.shutdown();
@@ -269,6 +285,8 @@ protected:
     }
 
     void TearDown() override {
+        reset_desktop_env_lookup_for_tests();
+        g_desktop_env_for_tests.clear();
         auto& shell = get_desktop_shell_interface();
         (void)shell.shutdown();
         _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
@@ -312,4 +330,19 @@ TEST_F(DesktopShellRealTest, CreateWindowFailsWhenPlatformAllocationFails) {
     EXPECT_TRUE(window_id.empty());
 
     _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
+}
+
+TEST_F(DesktopShellRealTest, DesktopEnvLookupSeamCanForceWindowCreateFailure) {
+    auto& wm = get_desktop_shell_interface().window_manager();
+
+    g_desktop_env_for_tests["SENTINEL_DESKTOP_WINDOW_CREATE_FAIL"] = "1";
+    set_desktop_env_lookup_for_tests(fake_desktop_env_lookup);
+
+    WindowProperties props{"", "EnvSeamFail", 0, 0, 320, 240, WindowState::Normal, true, false, "ext_env"};
+    EXPECT_TRUE(wm.create_window(props).empty());
+
+    g_desktop_env_for_tests.clear();
+    const auto recovered_window = wm.create_window(props);
+    EXPECT_FALSE(recovered_window.empty());
+    EXPECT_TRUE(wm.destroy_window(recovered_window));
 }

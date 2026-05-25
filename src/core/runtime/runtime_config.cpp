@@ -10,6 +10,7 @@ namespace sentinel::core {
 
 namespace {
 constexpr unsigned int kSupportedConfigVersion = 1;
+RuntimeConfigFileLoaderForTests g_runtime_config_file_loader_for_tests = nullptr;
 
 void trim_in_place(std::string& value) {
     auto not_space = [](unsigned char c) { return !std::isspace(c); };
@@ -73,6 +74,27 @@ bool parse_line_key_value(const std::string& line, std::string& key, std::string
     trim_in_place(key);
     trim_in_place(value);
     return !key.empty();
+}
+
+bool load_runtime_config_file_real(const std::string& path, std::string& content, std::string& error) {
+    if (path.empty()) {
+        error.clear();
+        content.clear();
+        return true;
+    }
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        error.clear();
+        content.clear();
+        return true;
+    }
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    content = buffer.str();
+    error.clear();
+    return true;
 }
 
 }  // namespace
@@ -171,22 +193,22 @@ bool parse_runtime_config_text(const std::string& text, RuntimeConfig& out, std:
 }
 
 bool load_runtime_config_from_file(const std::string& path, RuntimeConfig& out, std::string& error) {
-    if (path.empty()) {
+    std::string text;
+    if (g_runtime_config_file_loader_for_tests != nullptr) {
+        if (!g_runtime_config_file_loader_for_tests(path, text, error)) {
+            return false;
+        }
+    } else if (!load_runtime_config_file_real(path, text, error)) {
+        return false;
+    }
+
+    if (text.empty()) {
         out = default_runtime_config();
         error.clear();
         return true;
     }
 
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        out = default_runtime_config();
-        error.clear();
-        return true;
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return parse_runtime_config_text(buffer.str(), out, error);
+    return parse_runtime_config_text(text, out, error);
 }
 
 bool apply_runtime_reconfiguration(const RuntimeConfig& candidate,
@@ -211,6 +233,14 @@ bool apply_runtime_reconfiguration_from_file(const std::string& path,
     }
 
     return apply_runtime_reconfiguration(candidate, current, error);
+}
+
+void set_runtime_config_file_loader_for_tests(RuntimeConfigFileLoaderForTests loader) {
+    g_runtime_config_file_loader_for_tests = loader;
+}
+
+void reset_runtime_config_file_loader_for_tests() {
+    g_runtime_config_file_loader_for_tests = nullptr;
 }
 
 }  // namespace sentinel::core

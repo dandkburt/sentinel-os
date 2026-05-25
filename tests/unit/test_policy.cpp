@@ -224,6 +224,18 @@ private:
     PolicySigningSecrets secrets_;
     std::string error_;
 };
+
+bool deterministic_policy_random_bytes(std::vector<uint8_t>& bytes) {
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<uint8_t>(i);
+    }
+    return true;
+}
+
+bool failing_policy_random_bytes(std::vector<uint8_t>& bytes) {
+    (void)bytes;
+    return false;
+}
 }  // namespace
 
 TEST(PolicyCapabilityEngineReal, RejectEmptyToken) {
@@ -297,6 +309,35 @@ TEST(PolicyCapabilityEngineReal, TokenIdsUseSecureRandomSuffixAndRemainUnique) {
 
     EXPECT_EQ(token_ids.size(), 8u);
     reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, RandomGeneratorSeamCanDeterministicallyControlTokenSuffix) {
+    initialize_policy_service();
+    reset_policy_signing_key_ids_for_tests();
+    set_policy_signing_key_id_for_tests("k55");
+    set_policy_random_bytes_generator_for_tests(deterministic_policy_random_bytes);
+
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+    const auto token = capability_engine.issue_token(unique_extension_id("det_rand"), {"file:read"});
+    ASSERT_FALSE(token.empty());
+
+    auto segments = split_token(token);
+    ASSERT_EQ(segments.size(), 4u);
+    EXPECT_EQ(segments[2], "k55-000102030405060708090a0b");
+
+    reset_policy_random_bytes_generator_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, RandomGeneratorSeamFailureDeterministicallyRejectsIssueToken) {
+    initialize_policy_service();
+    set_policy_random_bytes_generator_for_tests(failing_policy_random_bytes);
+
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+    const auto token = capability_engine.issue_token(unique_extension_id("det_fail"), {"file:read"});
+    EXPECT_TRUE(token.empty());
+
+    reset_policy_random_bytes_generator_for_tests();
 }
 
 TEST(PolicyCapabilityEngineReal, AcceptExactCapability) {

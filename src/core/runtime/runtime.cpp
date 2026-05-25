@@ -14,6 +14,8 @@
 namespace sentinel::core {
 
 namespace {
+RuntimeEnvLookupForTests g_runtime_env_lookup_for_tests = nullptr;
+
 struct ParsedCapability {
     std::string token;
     std::string required_capability;
@@ -37,6 +39,10 @@ ParsedCapability parse_capability_request(const std::string& subsystem_name, con
 }
 
 std::string read_env_var(const char* name) {
+    if (g_runtime_env_lookup_for_tests != nullptr) {
+        return g_runtime_env_lookup_for_tests(name == nullptr ? std::string() : std::string(name));
+    }
+
 #ifdef _WIN32
     char* value = nullptr;
     size_t len = 0;
@@ -383,6 +389,14 @@ bool trigger_runtime_reconfiguration(const std::string& path, std::string& error
 RuntimeConfig get_runtime_config_snapshot_for_tests() {
     auto& runtime = get_runtime();
     return runtime.runtime_config_snapshot_for_tests();
+}
+
+void set_runtime_env_lookup_for_tests(RuntimeEnvLookupForTests lookup) {
+    g_runtime_env_lookup_for_tests = lookup;
+}
+
+void reset_runtime_env_lookup_for_tests() {
+    g_runtime_env_lookup_for_tests = nullptr;
 }
 
 }  // namespace sentinel::core

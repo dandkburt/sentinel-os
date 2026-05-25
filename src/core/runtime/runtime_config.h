@@ -13,6 +13,10 @@ struct RuntimeConfig {
     unsigned int shutdown_timeout_ms = 5000;
 };
 
+using RuntimeConfigFileLoaderForTests = bool (*)(const std::string& path,
+                                                 std::string& content,
+                                                 std::string& error);
+
 RuntimeConfig default_runtime_config();
 
 bool validate_runtime_config(const RuntimeConfig& config, std::string& error);
@@ -28,5 +32,9 @@ bool apply_runtime_reconfiguration(const RuntimeConfig& candidate,
 bool apply_runtime_reconfiguration_from_file(const std::string& path,
                                              RuntimeConfig& current,
                                              std::string& error);
+
+void set_runtime_config_file_loader_for_tests(RuntimeConfigFileLoaderForTests loader);
+
+void reset_runtime_config_file_loader_for_tests();
 
 }  // namespace sentinel::core

@@ -27,6 +27,14 @@ struct ExtensionRecord {
     ExtensionLifecycleState lifecycle_state = ExtensionLifecycleState::Registered;
 };
 
+using ExtensionManifestTextLoaderForTests = bool (*)(const std::string& manifest_path,
+                                                     std::string& manifest_text,
+                                                     std::string& error);
+
+using ExtensionManifestPathEnumeratorForTests = bool (*)(const std::string& directory_path,
+                                                         std::vector<std::string>& manifest_paths,
+                                                         std::string& error);
+
 class IExtensionRegistry {
 public:
     virtual ~IExtensionRegistry() = default;
@@ -88,5 +96,17 @@ void reset_extension_lifecycle_fail_step_for_tests();
 bool set_extension_dependencies_for_tests(const std::string& extension_id,
                                           const std::vector<std::string>& dependencies,
                                           std::string& error);
+
+// Test hook: override manifest file loading.
+void set_extension_manifest_text_loader_for_tests(ExtensionManifestTextLoaderForTests loader);
+
+// Test hook: clear manifest file loading override.
+void reset_extension_manifest_text_loader_for_tests();
+
+// Test hook: override manifest path enumeration for discovery.
+void set_extension_manifest_path_enumerator_for_tests(ExtensionManifestPathEnumeratorForTests enumerator);
+
+// Test hook: clear discovery enumerator override.
+void reset_extension_manifest_path_enumerator_for_tests();
 
 }  // namespace sentinel::core

@@ -42,6 +42,7 @@ std::string g_signing_key_id = kDefaultSigningKeyId;
 std::string g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
 std::once_flag g_policy_key_env_init_once;
 std::shared_ptr<IPolicySigningSecretProvider> g_policy_signing_secret_provider_for_tests;
+PolicyRandomBytesGeneratorForTests g_policy_random_bytes_generator_for_tests = nullptr;
 PolicySigningKeyLoadTelemetry g_signing_key_load_telemetry;
 
 uint64_t unix_timestamp_now_seconds() {
@@ -743,6 +744,10 @@ bool fill_secure_random_bytes(std::vector<uint8_t>& bytes) {
         return true;
     }
 
+    if (g_policy_random_bytes_generator_for_tests != nullptr) {
+        return g_policy_random_bytes_generator_for_tests(bytes);
+    }
+
 #ifdef _WIN32
     const NTSTATUS status = BCryptGenRandom(nullptr,
                                             bytes.data(),
@@ -1395,6 +1400,14 @@ PolicySigningKeyLoadTelemetry get_policy_signing_key_load_telemetry_for_tests() 
 void reset_policy_signing_key_load_telemetry_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
     g_signing_key_load_telemetry = PolicySigningKeyLoadTelemetry{};
+}
+
+void set_policy_random_bytes_generator_for_tests(PolicyRandomBytesGeneratorForTests generator) {
+    g_policy_random_bytes_generator_for_tests = generator;
+}
+
+void reset_policy_random_bytes_generator_for_tests() {
+    g_policy_random_bytes_generator_for_tests = nullptr;
 }
 
 }  // namespace sentinel::services::policy

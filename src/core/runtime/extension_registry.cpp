@@ -16,6 +16,8 @@ namespace sentinel::core {
 namespace {
 
 namespace fs = std::filesystem;
+ExtensionManifestTextLoaderForTests g_manifest_text_loader_for_tests = nullptr;
+ExtensionManifestPathEnumeratorForTests g_manifest_path_enumerator_for_tests = nullptr;
 
 std::string normalize_source_path(const fs::path& path) {
     std::error_code ec;
@@ -52,28 +54,40 @@ public:
         }
 
         const fs::path source_path(manifest_path);
-        std::error_code ec;
-        if (!fs::exists(source_path, ec)) {
-            error = "source-not-found";
-            return false;
-        }
-        if (!fs::is_regular_file(source_path, ec)) {
-            error = "source-not-readable";
-            return false;
-        }
+        std::string manifest_text;
 
-        std::ifstream in(source_path, std::ios::in);
-        if (!in.is_open()) {
-            error = "source-not-readable";
-            return false;
-        }
+        if (g_manifest_text_loader_for_tests != nullptr) {
+            if (!g_manifest_text_loader_for_tests(manifest_path, manifest_text, error)) {
+                if (error.empty()) {
+                    error = "source-not-readable";
+                }
+                return false;
+            }
+        } else {
+            std::error_code ec;
+            if (!fs::exists(source_path, ec)) {
+                error = "source-not-found";
+                return false;
+            }
+            if (!fs::is_regular_file(source_path, ec)) {
+                error = "source-not-readable";
+                return false;
+            }
 
-        std::stringstream buffer;
-        buffer << in.rdbuf();
+            std::ifstream in(source_path, std::ios::in);
+            if (!in.is_open()) {
+                error = "source-not-readable";
+                return false;
+            }
+
+            std::stringstream buffer;
+            buffer << in.rdbuf();
+            manifest_text = buffer.str();
+        }
 
         ExtensionManifest manifest;
         std::string manifest_error;
-        if (!parse_extension_manifest_text(buffer.str(), manifest, manifest_error)) {
+        if (!parse_extension_manifest_text(manifest_text, manifest, manifest_error)) {
             error = map_manifest_error_to_registry_error(manifest_error);
             return false;
         }
@@ -130,29 +144,45 @@ public:
 
         const fs::path root(directory_path);
         std::error_code ec;
-        if (!fs::exists(root, ec)) {
-            error = "source-not-found";
-            return false;
-        }
-        if (!fs::is_directory(root, ec)) {
-            error = "source-not-readable";
-            return false;
-        }
-
-        std::vector<fs::path> manifest_paths;
-        for (const auto& entry : fs::directory_iterator(root, ec)) {
-            if (ec) {
+        if (g_manifest_path_enumerator_for_tests == nullptr) {
+            if (!fs::exists(root, ec)) {
+                error = "source-not-found";
+                return false;
+            }
+            if (!fs::is_directory(root, ec)) {
                 error = "source-not-readable";
                 return false;
             }
+        }
 
-            if (!entry.is_regular_file()) {
-                continue;
+        std::vector<fs::path> manifest_paths;
+        if (g_manifest_path_enumerator_for_tests != nullptr) {
+            std::vector<std::string> enumerated_paths;
+            if (!g_manifest_path_enumerator_for_tests(directory_path, enumerated_paths, error)) {
+                if (error.empty()) {
+                    error = "source-not-readable";
+                }
+                return false;
             }
-            if (!has_manifest_extension(entry.path())) {
-                continue;
+
+            for (const auto& path : enumerated_paths) {
+                manifest_paths.push_back(fs::path(path));
             }
-            manifest_paths.push_back(entry.path());
+        } else {
+            for (const auto& entry : fs::directory_iterator(root, ec)) {
+                if (ec) {
+                    error = "source-not-readable";
+                    return false;
+                }
+
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                if (!has_manifest_extension(entry.path())) {
+                    continue;
+                }
+                manifest_paths.push_back(entry.path());
+            }
         }
 
         std::sort(manifest_paths.begin(), manifest_paths.end(), [](const fs::path& a, const fs::path& b) {
@@ -594,6 +624,22 @@ bool set_extension_dependencies_for_tests(const std::string& extension_id,
                                           const std::vector<std::string>& dependencies,
                                           std::string& error) {
     return ensure_registry().set_dependencies_for_tests(extension_id, dependencies, error);
+}
+
+void set_extension_manifest_text_loader_for_tests(ExtensionManifestTextLoaderForTests loader) {
+    g_manifest_text_loader_for_tests = loader;
+}
+
+void reset_extension_manifest_text_loader_for_tests() {
+    g_manifest_text_loader_for_tests = nullptr;
+}
+
+void set_extension_manifest_path_enumerator_for_tests(ExtensionManifestPathEnumeratorForTests enumerator) {
+    g_manifest_path_enumerator_for_tests = enumerator;
+}
+
+void reset_extension_manifest_path_enumerator_for_tests() {
+    g_manifest_path_enumerator_for_tests = nullptr;
 }
 
 }  // namespace sentinel::core

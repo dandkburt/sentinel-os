@@ -275,7 +275,7 @@ Each TODO is scoped to a specific component and layer.
 
 ### Unit Test Implementation
 - [x] Implement all integration test placeholders (see `tests/integration/test_integration.cpp`)
-- [ ] Add mock implementations for external dependencies
+- [x] Add mock implementations for external dependencies
 - [x] Add negative test cases for error handling
 - [ ] Add performance benchmarks
 

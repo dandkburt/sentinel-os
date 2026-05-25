@@ -136,6 +136,8 @@ public:
 
 // Public API for accessing the global policy service instance
 namespace sentinel::services::policy {
+using PolicyRandomBytesGeneratorForTests = bool (*)(std::vector<uint8_t>& bytes);
+
     /// @brief Get the global policy service instance
     IPolicyService& get_policy_service_interface();
 
@@ -180,4 +182,10 @@ namespace sentinel::services::policy {
 
     /// @brief Test hook: reset signing-key load telemetry counters.
     void reset_policy_signing_key_load_telemetry_for_tests();
+
+    /// @brief Test hook: override secure random byte generation for token IDs.
+    void set_policy_random_bytes_generator_for_tests(PolicyRandomBytesGeneratorForTests generator);
+
+    /// @brief Test hook: reset secure random byte generation override.
+    void reset_policy_random_bytes_generator_for_tests();
 }

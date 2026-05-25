@@ -113,9 +113,17 @@ public:
 
 // Public API for accessing the global desktop shell instance
 namespace sentinel::shell::desktop {
+using DesktopEnvLookupForTests = std::string (*)(const std::string& name);
+
     /// @brief Get the global desktop shell instance
     IDesktopShell& get_desktop_shell_interface();
 
     /// @brief Initialize the desktop shell (must be called before use)
     void initialize_desktop_shell();
+
+    /// @brief Test hook: override environment lookup used by desktop shell scaffolding.
+    void set_desktop_env_lookup_for_tests(DesktopEnvLookupForTests lookup);
+
+    /// @brief Test hook: clear desktop shell environment lookup override.
+    void reset_desktop_env_lookup_for_tests();
 }
