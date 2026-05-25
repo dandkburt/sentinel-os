@@ -3,8 +3,16 @@
 #include <memory>
 #include <unordered_map>
 #include <map>
+#include <atomic>
 
 using namespace sentinel::services::namespace_service;
+
+namespace {
+std::string unique_namespace_id(const std::string& base) {
+    static std::atomic<unsigned int> counter{0};
+    return base + "_" + std::to_string(++counter);
+}
+}
 
 class NamespaceManagerTest : public ::testing::Test {
 protected:
@@ -114,4 +122,93 @@ TEST_F(NamespaceManagerTest, GetResourceUsage) {
     
     auto usage = manager->get_resource_usage("ns1");
     EXPECT_EQ(usage["memory_bytes"], 104857600);
+}
+
+class NamespaceManagerRealTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        initialize_namespace_service();
+    }
+
+    INamespaceManager& manager() {
+        return get_namespace_manager_interface();
+    }
+};
+
+TEST_F(NamespaceManagerRealTest, CreateInitializesOwnerQuotaAndZeroedUsage) {
+    const auto namespace_id = unique_namespace_id("ns_create_init");
+    const std::string owner = "owner_create_init";
+    ResourceQuota quota{1024 * 1024, 3, 2, 1};
+
+    ASSERT_TRUE(manager().create_namespace(namespace_id, owner, quota));
+    EXPECT_TRUE(manager().namespace_exists(namespace_id));
+
+    NamespaceEntry wrong_owner{"/files/a", NamespaceType::File, "other_owner", true};
+    EXPECT_FALSE(manager().add_entry(namespace_id, wrong_owner));
+
+    NamespaceEntry file1{"/files/a", NamespaceType::File, owner, true};
+    EXPECT_TRUE(manager().add_entry(namespace_id, file1));
+
+    NamespaceEntry file2{"/files/b", NamespaceType::File, owner, true};
+    EXPECT_TRUE(manager().add_entry(namespace_id, file2));
+
+    NamespaceEntry file3{"/files/c", NamespaceType::File, owner, true};
+    EXPECT_TRUE(manager().add_entry(namespace_id, file3));
+
+    NamespaceEntry file4{"/files/d", NamespaceType::File, owner, true};
+    EXPECT_FALSE(manager().add_entry(namespace_id, file4));
+
+    const auto usage = manager().get_resource_usage(namespace_id);
+    EXPECT_EQ(usage.at("memory_bytes"), 3u * 4096u);
+    EXPECT_EQ(usage.at("file_handles"), 3u);
+    EXPECT_EQ(usage.at("threads"), 0u);
+    EXPECT_EQ(usage.at("network_connections"), 0u);
+
+    EXPECT_TRUE(manager().remove_namespace(namespace_id));
+}
+
+TEST_F(NamespaceManagerRealTest, DuplicateCreateFailsAndPreservesOriginalState) {
+    const auto namespace_id = unique_namespace_id("ns_duplicate");
+    const std::string owner = "owner_duplicate";
+    ResourceQuota original_quota{8192, 1, 1, 1};
+    ResourceQuota replacement_quota{1024 * 1024, 16, 16, 16};
+
+    ASSERT_TRUE(manager().create_namespace(namespace_id, owner, original_quota));
+    NamespaceEntry existing{"/files/a", NamespaceType::File, owner, true};
+    ASSERT_TRUE(manager().add_entry(namespace_id, existing));
+
+    EXPECT_FALSE(manager().create_namespace(namespace_id, "other_owner", replacement_quota));
+
+    NamespaceEntry still_owner{"/files/b", NamespaceType::File, owner, true};
+    EXPECT_FALSE(manager().add_entry(namespace_id, still_owner));
+
+    NamespaceEntry wrong_owner{"/files/c", NamespaceType::File, "other_owner", true};
+    EXPECT_FALSE(manager().add_entry(namespace_id, wrong_owner));
+
+    const auto usage = manager().get_resource_usage(namespace_id);
+    EXPECT_EQ(usage.at("file_handles"), 1u);
+    EXPECT_EQ(usage.at("memory_bytes"), 4096u);
+
+    EXPECT_TRUE(manager().remove_namespace(namespace_id));
+}
+
+TEST_F(NamespaceManagerRealTest, InvalidNamespaceOrOwnerIsRejectedAndDefaultsApply) {
+    const auto invalid_namespace = unique_namespace_id("bad namespace");
+    ResourceQuota quota{0, 0, 0, 0};
+    EXPECT_FALSE(manager().create_namespace(invalid_namespace, "owner_valid", quota));
+
+    const auto invalid_owner_namespace = unique_namespace_id("valid_namespace");
+    EXPECT_FALSE(manager().create_namespace(invalid_owner_namespace, "bad owner", quota));
+
+    const auto defaulted_namespace = unique_namespace_id("defaulted_namespace");
+    ASSERT_TRUE(manager().create_namespace(defaulted_namespace, "owner_defaulted", quota));
+
+    NamespaceEntry entry{"/files/defaulted", NamespaceType::File, "owner_defaulted", true};
+    EXPECT_TRUE(manager().add_entry(defaulted_namespace, entry));
+
+    const auto usage = manager().get_resource_usage(defaulted_namespace);
+    EXPECT_EQ(usage.at("file_handles"), 1u);
+    EXPECT_EQ(usage.at("memory_bytes"), 4096u);
+
+    EXPECT_TRUE(manager().remove_namespace(defaulted_namespace));
 }

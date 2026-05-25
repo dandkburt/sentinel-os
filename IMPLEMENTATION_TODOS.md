@@ -107,7 +107,7 @@ Each TODO is scoped to a specific component and layer.
 
 ### Namespace Service (`src/services/namespace/namespace.h`, `namespace_service.cpp`)
 
-- [ ] **TODO**: Allocate namespace with quotas
+- [x] **DONE**: Allocate namespace with quotas
   - Location: `NamespaceManagerImpl::create_namespace()`
   - Task: Initialize namespace resource tracking:
     1. Validate namespace_id doesn't already exist

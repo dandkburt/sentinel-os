@@ -1,11 +1,64 @@
 #include "namespace.h"
 #include <unordered_map>
 #include <iostream>
+#include <cctype>
 
 namespace sentinel::services::namespace_service {
 
 namespace {
 constexpr uint64_t kEstimatedEntryMemoryBytes = 4096;
+constexpr uint64_t kDefaultQuotaMemoryBytes = 1024 * 1024 * 100;
+constexpr uint32_t kDefaultQuotaFileHandles = 1024;
+constexpr uint32_t kDefaultQuotaThreads = 16;
+constexpr uint32_t kDefaultQuotaNetworkConnections = 32;
+
+bool is_valid_identifier(const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+
+    for (char c : value) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_' || c == '-' || c == '.')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::map<std::string, uint64_t> zero_usage_metrics() {
+    return {
+        {"memory_bytes", 0},
+        {"file_handles", 0},
+        {"threads", 0},
+        {"network_connections", 0},
+    };
+}
+
+ResourceQuota quota_with_defaults(const ResourceQuota& input) {
+    ResourceQuota result = input;
+    if (result.max_memory_bytes == 0) {
+        result.max_memory_bytes = kDefaultQuotaMemoryBytes;
+    }
+    if (result.max_file_handles == 0) {
+        result.max_file_handles = kDefaultQuotaFileHandles;
+    }
+    if (result.max_threads == 0) {
+        result.max_threads = kDefaultQuotaThreads;
+    }
+    if (result.max_network_connections == 0) {
+        result.max_network_connections = kDefaultQuotaNetworkConnections;
+    }
+    return result;
+}
+
+bool quota_is_valid(const ResourceQuota& quota) {
+    return quota.max_memory_bytes > 0 &&
+           quota.max_file_handles > 0 &&
+           quota.max_threads > 0 &&
+           quota.max_network_connections > 0;
+}
 
 bool is_valid_entry_path(const std::string& path) {
     return !path.empty() && path[0] == '/';
@@ -52,20 +105,26 @@ class NamespaceManagerImpl : public INamespaceManager {
 public:
     bool create_namespace(const std::string& namespace_id, const std::string& owner_id, 
                          const ResourceQuota& quota) override {
-        if (namespaces_.find(namespace_id) != namespaces_.end()) {
-            return false;  // Already exists
-        }
-
-        if (namespace_id.empty() || owner_id.empty()) {
+        if (!is_valid_identifier(namespace_id) || !is_valid_identifier(owner_id)) {
             return false;
         }
 
-        NamespaceInfo info{owner_id, quota, {}};
-        info.usage_metrics["memory_bytes"] = 0;
-        info.usage_metrics["file_handles"] = 0;
-        info.usage_metrics["threads"] = 0;
-        info.usage_metrics["network_connections"] = 0;
-        namespaces_[namespace_id] = info;
+        const auto existing = namespaces_.find(namespace_id);
+        if (existing != namespaces_.end()) {
+            return false;  // Already exists; preserve existing state
+        }
+
+        const ResourceQuota normalized_quota = quota_with_defaults(quota);
+        if (!quota_is_valid(normalized_quota)) {
+            return false;
+        }
+
+        NamespaceInfo info;
+        info.owner_id = owner_id;
+        info.quota = normalized_quota;
+        info.entries = {};
+        info.usage_metrics = zero_usage_metrics();
+        namespaces_.emplace(namespace_id, std::move(info));
         return true;
     }
 
@@ -113,7 +172,7 @@ public:
     std::map<std::string, uint64_t> get_resource_usage(const std::string& namespace_id) const override {
         auto it = namespaces_.find(namespace_id);
         if (it != namespaces_.end()) {
-            return calculate_usage(it->second.entries);
+            return it->second.usage_metrics;
         }
         return {};
     }

@@ -90,6 +90,79 @@ TEST(NamespaceIntegration, RejectQuotaThatIsBelowCurrentUsage) {
     EXPECT_EQ(usage["network_connections"], 1);
 }
 
+TEST(NamespaceIntegration, CreateThenAddEntryUsesInitializedQuotaAndUsageState) {
+    initialize_namespace_service();
+    auto& namespace_mgr = get_namespace_manager_interface();
+
+    ResourceQuota quota{8192, 2, 1, 1};
+    ASSERT_TRUE(namespace_mgr.create_namespace("ns_init_path", "owner_init", quota));
+
+    auto usage_before = namespace_mgr.get_resource_usage("ns_init_path");
+    ASSERT_FALSE(usage_before.empty());
+    EXPECT_EQ(usage_before["memory_bytes"], 0);
+    EXPECT_EQ(usage_before["file_handles"], 0);
+    EXPECT_EQ(usage_before["threads"], 0);
+    EXPECT_EQ(usage_before["network_connections"], 0);
+
+    NamespaceEntry first{"/files/first", NamespaceType::File, "owner_init", true};
+    EXPECT_TRUE(namespace_mgr.add_entry("ns_init_path", first));
+
+    auto usage_after_first = namespace_mgr.get_resource_usage("ns_init_path");
+    EXPECT_EQ(usage_after_first["memory_bytes"], 4096);
+    EXPECT_EQ(usage_after_first["file_handles"], 1);
+
+    NamespaceEntry second{"/files/second", NamespaceType::File, "owner_init", true};
+    EXPECT_TRUE(namespace_mgr.add_entry("ns_init_path", second));
+
+    auto usage_after_second = namespace_mgr.get_resource_usage("ns_init_path");
+    EXPECT_EQ(usage_after_second["memory_bytes"], 8192);
+    EXPECT_EQ(usage_after_second["file_handles"], 2);
+
+    NamespaceEntry third{"/files/third", NamespaceType::File, "owner_init", true};
+    EXPECT_FALSE(namespace_mgr.add_entry("ns_init_path", third));
+
+    auto usage_after_reject = namespace_mgr.get_resource_usage("ns_init_path");
+    EXPECT_EQ(usage_after_reject["memory_bytes"], 8192);
+    EXPECT_EQ(usage_after_reject["file_handles"], 2);
+
+    EXPECT_TRUE(namespace_mgr.remove_namespace("ns_init_path"));
+}
+
+TEST(NamespaceIntegration, CreateRemoveCreateSameIdIsPredictable) {
+    initialize_namespace_service();
+    auto& namespace_mgr = get_namespace_manager_interface();
+
+    ResourceQuota first_quota{4096, 1, 1, 1};
+    ASSERT_TRUE(namespace_mgr.create_namespace("ns_recreate", "owner_one", first_quota));
+
+    NamespaceEntry first_entry{"/files/a", NamespaceType::File, "owner_one", true};
+    ASSERT_TRUE(namespace_mgr.add_entry("ns_recreate", first_entry));
+
+    auto first_usage = namespace_mgr.get_resource_usage("ns_recreate");
+    EXPECT_EQ(first_usage["file_handles"], 1);
+
+    ASSERT_TRUE(namespace_mgr.remove_namespace("ns_recreate"));
+    EXPECT_FALSE(namespace_mgr.namespace_exists("ns_recreate"));
+
+    ResourceQuota second_quota{8192, 2, 1, 1};
+    ASSERT_TRUE(namespace_mgr.create_namespace("ns_recreate", "owner_two", second_quota));
+
+    auto reset_usage = namespace_mgr.get_resource_usage("ns_recreate");
+    EXPECT_EQ(reset_usage["memory_bytes"], 0);
+    EXPECT_EQ(reset_usage["file_handles"], 0);
+
+    NamespaceEntry old_owner_entry{"/files/b", NamespaceType::File, "owner_one", true};
+    EXPECT_FALSE(namespace_mgr.add_entry("ns_recreate", old_owner_entry));
+
+    NamespaceEntry new_owner_entry{"/files/c", NamespaceType::File, "owner_two", true};
+    EXPECT_TRUE(namespace_mgr.add_entry("ns_recreate", new_owner_entry));
+
+    auto recreated_usage = namespace_mgr.get_resource_usage("ns_recreate");
+    EXPECT_EQ(recreated_usage["file_handles"], 1);
+
+    EXPECT_TRUE(namespace_mgr.remove_namespace("ns_recreate"));
+}
+
 /// @brief Integration test: Policy service is initialized
 TEST(PolicyIntegration, PolicyServiceInitialization) {
     initialize_policy_service();
