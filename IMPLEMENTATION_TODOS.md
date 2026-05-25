@@ -254,8 +254,8 @@ Each TODO is scoped to a specific component and layer.
 ## Priority 2: Core Features (Phase 2)
 
 ### Configuration System
-- [ ] Load runtime configuration from TOML/JSON
-- [ ] Configuration validation and defaults
+- [x] Load runtime configuration from TOML/JSON
+- [x] Configuration validation and defaults
 - [ ] Runtime reconfiguration support
 - [ ] Configuration versioning
 

@@ -1,6 +1,8 @@
 add_library(core_runtime STATIC
     runtime.cpp
     bootstrap.h
+    runtime_config.cpp
+    runtime_config.h
 )
 
 add_library(sentinel_runtime_contract SHARED

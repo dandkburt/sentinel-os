@@ -1,4 +1,5 @@
 #include "bootstrap.h"
+#include "runtime_config.h"
 #include "../../services/policy/policy.h"
 #include "../../services/namespace/namespace.h"
 #include <unordered_map>
@@ -61,12 +62,20 @@ bool should_fail_bootstrap_step(const std::string& step_name) {
     const std::string configured_step = lowercase_ascii(read_env_var("SENTINEL_BOOTSTRAP_FAIL_STEP"));
     return !configured_step.empty() && configured_step == step_name;
 }
+
+std::string configured_runtime_config_path() {
+    const std::string from_env = read_env_var("SENTINEL_RUNTIME_CONFIG_PATH");
+    if (!from_env.empty()) {
+        return from_env;
+    }
+    return "sentinel_runtime.conf";
+}
 }  // namespace
 
 /// @brief Default bootstrap implementation
 class BootstrapImpl : public IBootstrap {
 public:
-    BootstrapImpl() : initialized_(false), version_("0.1.0") {}
+    BootstrapImpl() : initialized_(false), version_("0.1.0"), runtime_config_(default_runtime_config()) {}
 
     BootstrapResult initialize() override {
         if (initialized_) {
@@ -91,11 +100,27 @@ public:
             };
 
             BootstrapResult step_result = run_step("configuration", []() {
-                // TODO: Wire real configuration loading.
+                // Configuration load happens in the next block.
             });
             if (!step_result.is_success()) {
                 return step_result;
             }
+
+            RuntimeConfig loaded_config = default_runtime_config();
+            std::string config_error;
+            if (!load_runtime_config_from_file(configured_runtime_config_path(), loaded_config, config_error)) {
+                std::cerr << "Runtime configuration parse failed; using fail-safe defaults. reason="
+                          << config_error << std::endl;
+                loaded_config = default_runtime_config();
+                config_error.clear();
+            }
+
+            if (!validate_runtime_config(loaded_config, config_error)) {
+                std::cerr << "Runtime configuration validation failed; using fail-safe defaults. reason="
+                          << config_error << std::endl;
+                loaded_config = default_runtime_config();
+            }
+            runtime_config_ = loaded_config;
 
             step_result = run_step("logging", []() {
                 // TODO: Wire real logging initialization.
@@ -104,25 +129,37 @@ public:
                 return step_result;
             }
 
-            step_result = run_step("policy", []() {
-                sentinel::services::policy::initialize_policy_service();
-            });
-            if (!step_result.is_success()) {
-                return step_result;
+            if (runtime_config_.enable_policy) {
+                step_result = run_step("policy", []() {
+                    sentinel::services::policy::initialize_policy_service();
+                });
+                if (!step_result.is_success()) {
+                    return step_result;
+                }
+            } else {
+                fire_lifecycle_event("init_step_skipped:policy");
             }
 
-            step_result = run_step("namespace", []() {
-                sentinel::services::namespace_service::initialize_namespace_service();
-            });
-            if (!step_result.is_success()) {
-                return step_result;
+            if (runtime_config_.enable_namespace) {
+                step_result = run_step("namespace", []() {
+                    sentinel::services::namespace_service::initialize_namespace_service();
+                });
+                if (!step_result.is_success()) {
+                    return step_result;
+                }
+            } else {
+                fire_lifecycle_event("init_step_skipped:namespace");
             }
 
-            step_result = run_step("event_broker", []() {
-                // TODO: Wire event broker registration.
-            });
-            if (!step_result.is_success()) {
-                return step_result;
+            if (runtime_config_.enable_event_broker) {
+                step_result = run_step("event_broker", []() {
+                    // TODO: Wire event broker registration.
+                });
+                if (!step_result.is_success()) {
+                    return step_result;
+                }
+            } else {
+                fire_lifecycle_event("init_step_skipped:event_broker");
             }
             
             // Mark runtime as initialized
@@ -202,6 +239,7 @@ private:
     std::condition_variable shutdown_cv_;
     std::size_t in_flight_operations_ = 0;
     std::unordered_map<std::string, std::vector<LifecycleCallback>> callbacks_;
+    RuntimeConfig runtime_config_;
 };
 
 /// @brief Default runtime implementation

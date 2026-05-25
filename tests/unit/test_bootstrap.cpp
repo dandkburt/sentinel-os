@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 #include "bootstrap.h"
+#include "runtime_config.h"
 #include <memory>
 #include <vector>
 #include <mutex>
 #include <cstdlib>
+#include <fstream>
+#include <filesystem>
 
 using namespace sentinel::core;
 
@@ -150,4 +153,96 @@ TEST_F(BootstrapRealTest, InitializationFailureStepCanRecover) {
     auto recovered = bootstrap.initialize();
     EXPECT_TRUE(recovered.is_success());
     EXPECT_TRUE(bootstrap.is_ready());
+}
+
+TEST(RuntimeConfigTest, ParseTomlStyleConfigWithValidation) {
+    const std::string text =
+        "log_level = debug\n"
+        "enable_policy = false\n"
+        "enable_namespace = true\n"
+        "enable_event_broker = false\n"
+        "shutdown_timeout_ms = 7500\n";
+
+    RuntimeConfig config;
+    std::string error;
+    ASSERT_TRUE(parse_runtime_config_text(text, config, error));
+    EXPECT_EQ(config.log_level, "debug");
+    EXPECT_FALSE(config.enable_policy);
+    EXPECT_TRUE(config.enable_namespace);
+    EXPECT_FALSE(config.enable_event_broker);
+    EXPECT_EQ(config.shutdown_timeout_ms, 7500u);
+}
+
+TEST(RuntimeConfigTest, ParseInvalidConfigFailsValidation) {
+    const std::string text = "shutdown_timeout_ms = 0\n";
+    RuntimeConfig config;
+    std::string error;
+    EXPECT_FALSE(parse_runtime_config_text(text, config, error));
+    EXPECT_FALSE(error.empty());
+}
+
+TEST(RuntimeConfigTest, MissingConfigFileUsesDefaults) {
+    RuntimeConfig config;
+    std::string error;
+    ASSERT_TRUE(load_runtime_config_from_file("nonexistent_runtime_config.conf", config, error));
+
+    const RuntimeConfig defaults = default_runtime_config();
+    EXPECT_EQ(config.log_level, defaults.log_level);
+    EXPECT_EQ(config.enable_policy, defaults.enable_policy);
+    EXPECT_EQ(config.enable_namespace, defaults.enable_namespace);
+    EXPECT_EQ(config.enable_event_broker, defaults.enable_event_broker);
+    EXPECT_EQ(config.shutdown_timeout_ms, defaults.shutdown_timeout_ms);
+}
+
+TEST_F(BootstrapRealTest, BootstrapLoadsConfigAndSkipsDisabledSteps) {
+    auto& bootstrap = get_runtime_interface().bootstrap();
+
+    const auto config_path = std::filesystem::temp_directory_path() / "sentinel_runtime_test.conf";
+    {
+        std::ofstream out(config_path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "enable_policy = false\n";
+        out << "enable_namespace = true\n";
+        out << "enable_event_broker = false\n";
+    }
+
+#ifdef _WIN32
+    _putenv((std::string("SENTINEL_RUNTIME_CONFIG_PATH=") + config_path.string()).c_str());
+#else
+    setenv("SENTINEL_RUNTIME_CONFIG_PATH", config_path.string().c_str(), 1);
+#endif
+
+    static std::mutex events_mutex;
+    static std::vector<std::string> seen_events;
+    {
+        std::lock_guard<std::mutex> lock(events_mutex);
+        seen_events.clear();
+    }
+
+    bootstrap.on_lifecycle_event("init_step_skipped:policy", [](const std::string& event) {
+        std::lock_guard<std::mutex> lock(events_mutex);
+        seen_events.push_back(event);
+    });
+    bootstrap.on_lifecycle_event("init_step_skipped:event_broker", [](const std::string& event) {
+        std::lock_guard<std::mutex> lock(events_mutex);
+        seen_events.push_back(event);
+    });
+
+    const auto result = bootstrap.initialize();
+    EXPECT_TRUE(result.is_success());
+
+    {
+        std::lock_guard<std::mutex> lock(events_mutex);
+        EXPECT_EQ(seen_events.size(), 2u);
+        EXPECT_EQ(seen_events[0], "init_step_skipped:policy");
+        EXPECT_EQ(seen_events[1], "init_step_skipped:event_broker");
+    }
+
+#ifdef _WIN32
+    _putenv("SENTINEL_RUNTIME_CONFIG_PATH=");
+#else
+    unsetenv("SENTINEL_RUNTIME_CONFIG_PATH");
+#endif
+    std::error_code ignored;
+    std::filesystem::remove(config_path, ignored);
 }
