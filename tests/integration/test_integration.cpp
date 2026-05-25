@@ -4,6 +4,7 @@
 #include "namespace.h"
 #include "shell.h"
 #include <cstdint>
+#include <cstdlib>
 
 using namespace sentinel::core;
 using namespace sentinel::services::policy;
@@ -152,6 +153,39 @@ TEST(DesktopShellIntegration, ShutdownClearsWindowResources) {
 
     EXPECT_TRUE(shell.shutdown());
     EXPECT_TRUE(wm.list_windows("cleanup_ext").empty());
+}
+
+TEST(DesktopShellIntegration, InitializationFailureModeAndRecovery) {
+    initialize_desktop_shell();
+    auto& shell = get_desktop_shell_interface();
+
+    // Ensure stable baseline before injecting a bootstrap failure mode.
+    EXPECT_TRUE(shell.shutdown());
+
+#ifdef _WIN32
+    _putenv("SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP=display");
+#else
+    setenv("SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP", "display", 1);
+#endif
+
+    EXPECT_FALSE(shell.initialize());
+    EXPECT_FALSE(shell.is_ready());
+    EXPECT_TRUE(shell.show_notification("Init", "Should fail", 100).empty());
+    EXPECT_FALSE(shell.set_active_taskbar_item("window_0"));
+
+#ifdef _WIN32
+    _putenv("SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP=");
+#else
+    unsetenv("SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP");
+#endif
+
+    EXPECT_TRUE(shell.initialize());
+    EXPECT_TRUE(shell.is_ready());
+
+    auto notif_id = shell.show_notification("Init", "Recovered", 100);
+    EXPECT_FALSE(notif_id.empty());
+
+    EXPECT_TRUE(shell.shutdown());
 }
 
 /// @brief Integration test: Runtime subsystem registration

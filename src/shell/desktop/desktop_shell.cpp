@@ -5,8 +5,45 @@
 #include <algorithm>
 #include <mutex>
 #include <chrono>
+#include <cstdlib>
+#include <cctype>
 
 namespace sentinel::shell::desktop {
+
+namespace {
+constexpr const char* kDesktopBootstrapFailStepEnv = "SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP";
+
+enum class DesktopLifecycleState {
+    Uninitialized,
+    Initializing,
+    Ready,
+    Failed,
+    ShuttingDown,
+};
+
+std::string read_env_var(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&value, &len, name) != 0 || value == nullptr) {
+        return "";
+    }
+    std::string result(value);
+    free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? "" : std::string(value);
+#endif
+}
+
+std::string to_lower_ascii(std::string input) {
+    std::transform(input.begin(), input.end(), input.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return input;
+}
+}  // namespace
 
 /// @brief Default window manager implementation
 class WindowManagerImpl : public IWindowManager {
@@ -102,37 +139,71 @@ public:
     DesktopShellImpl() 
         : window_manager_(std::make_unique<WindowManagerImpl>()),
           initialized_(false),
+          lifecycle_state_(DesktopLifecycleState::Uninitialized),
           version_("0.1.0") {}
 
     bool initialize() override {
-        if (initialized_) {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+
+        if (lifecycle_state_ == DesktopLifecycleState::Ready) {
             return true;
         }
+        if (lifecycle_state_ == DesktopLifecycleState::Initializing ||
+            lifecycle_state_ == DesktopLifecycleState::ShuttingDown) {
+            return false;
+        }
+
+        lifecycle_state_ = DesktopLifecycleState::Initializing;
+        last_bootstrap_error_.clear();
 
         try {
-            // TODO: Connect to platform display server and input routing.
+            if (!connect_display_server()) {
+                return fail_initialization("display-connection");
+            }
+            if (!create_root_window_scaffold()) {
+                return fail_initialization("root-window-scaffold");
+            }
+            if (!register_shell_event_handlers()) {
+                return fail_initialization("event-handler-registration");
+            }
+            if (!start_input_event_routing()) {
+                return fail_initialization("input-routing");
+            }
+
             initialized_ = true;
+            lifecycle_state_ = DesktopLifecycleState::Ready;
             return true;
         } catch (const std::exception& e) {
             std::cerr << "Desktop shell initialization failed: " << e.what() << std::endl;
-            return false;
+            return fail_initialization("exception");
         }
     }
 
     bool shutdown() override {
-        if (!initialized_) {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+
+        if (lifecycle_state_ == DesktopLifecycleState::ShuttingDown) {
+            return false;
+        }
+        if (lifecycle_state_ == DesktopLifecycleState::Uninitialized && !initialized_) {
             return true;
         }
+
+        lifecycle_state_ = DesktopLifecycleState::ShuttingDown;
 
         try {
             if (auto* wm = dynamic_cast<WindowManagerImpl*>(window_manager_.get())) {
                 wm->clear_windows();
             }
             notifications_.clear();
+            cleanup_platform_scaffold();
             initialized_ = false;
+            lifecycle_state_ = DesktopLifecycleState::Uninitialized;
+            last_bootstrap_error_.clear();
             return true;
         } catch (const std::exception& e) {
             std::cerr << "Desktop shell shutdown failed: " << e.what() << std::endl;
+            lifecycle_state_ = DesktopLifecycleState::Failed;
             return false;
         }
     }
@@ -142,11 +213,18 @@ public:
     }
 
     bool set_active_taskbar_item(const std::string& window_id) override {
+        if (!is_ready()) {
+            return false;
+        }
         return window_manager_->bring_to_front(window_id);
     }
 
     std::string show_notification(const std::string& title, const std::string& message, 
                                  unsigned int duration_ms = 0) override {
+        if (!is_ready()) {
+            return "";
+        }
+
         // TODO: Call platform-native notification API.
         std::string notification_id = "notif_" + std::to_string(notifications_.size());
         notifications_[notification_id] = {
@@ -161,7 +239,8 @@ public:
     }
 
     bool is_ready() const override {
-        return initialized_;
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        return lifecycle_state_ == DesktopLifecycleState::Ready && initialized_;
     }
 
     std::string get_version() const override {
@@ -169,9 +248,72 @@ public:
     }
 
 private:
+    bool should_fail_bootstrap_step(const char* step_name) const {
+        const std::string configured = to_lower_ascii(read_env_var(kDesktopBootstrapFailStepEnv));
+        if (configured.empty()) {
+            return false;
+        }
+        return configured == "any" || configured == to_lower_ascii(step_name);
+    }
+
+    bool connect_display_server() {
+        if (should_fail_bootstrap_step("display")) {
+            return false;
+        }
+        platform_display_connected_ = true;
+        return true;
+    }
+
+    bool create_root_window_scaffold() {
+        if (should_fail_bootstrap_step("root")) {
+            return false;
+        }
+        root_window_ready_ = true;
+        return true;
+    }
+
+    bool register_shell_event_handlers() {
+        if (should_fail_bootstrap_step("events")) {
+            return false;
+        }
+        shell_event_handlers_registered_ = true;
+        return true;
+    }
+
+    bool start_input_event_routing() {
+        if (should_fail_bootstrap_step("input")) {
+            return false;
+        }
+        input_routing_active_ = true;
+        return true;
+    }
+
+    void cleanup_platform_scaffold() {
+        input_routing_active_ = false;
+        shell_event_handlers_registered_ = false;
+        root_window_ready_ = false;
+        platform_display_connected_ = false;
+    }
+
+    bool fail_initialization(const std::string& reason) {
+        last_bootstrap_error_ = reason;
+        cleanup_platform_scaffold();
+        initialized_ = false;
+        lifecycle_state_ = DesktopLifecycleState::Failed;
+        std::cerr << "Desktop shell initialization failed at step: " << reason << std::endl;
+        return false;
+    }
+
+    mutable std::mutex lifecycle_mutex_;
     std::unique_ptr<IWindowManager> window_manager_;
     bool initialized_;
+    DesktopLifecycleState lifecycle_state_;
+    std::string last_bootstrap_error_;
     std::string version_;
+    bool platform_display_connected_ = false;
+    bool root_window_ready_ = false;
+    bool shell_event_handlers_registered_ = false;
+    bool input_routing_active_ = false;
     struct NotificationInfo {
         std::string title;
         std::string message;

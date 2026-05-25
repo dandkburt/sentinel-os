@@ -197,16 +197,16 @@ Each TODO is scoped to a specific component and layer.
   - Depends: Synchronization primitives
   - Estimated effort: 1 day
 
-- [ ] **TODO**: Initialize native window system
+- [x] **DONE**: Desktop initialization scaffold with explicit readiness/failure states
   - Location: `DesktopShellImpl::initialize()`
-  - Task: Setup platform window system:
-    1. Connect to display server (Wayland/X11 on Linux, DWM on Windows)
-    2. Create root/desktop window
-    3. Register shell event handlers
-    4. Setup input event routing
-    5. Initialize rendering context if needed
-  - Depends: Platform-specific window system APIs
-  - Estimated effort: 3-4 days
+  - Task: Add deterministic bootstrap scaffold:
+    1. Display connection step
+    2. Root window scaffold step
+    3. Event handler registration step
+    4. Input routing start step
+    5. Explicit failed/ready/shutdown lifecycle state handling
+  - Validation: Integration failure-mode + recovery assertions added.
+  - Follow-up: Replace scaffold steps with platform-specific adapters.
 
 - [x] **DONE**: Cleanup window system resources
   - Location: `DesktopShellImpl::shutdown()`
