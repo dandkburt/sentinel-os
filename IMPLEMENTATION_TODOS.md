@@ -263,7 +263,7 @@ Each TODO is scoped to a specific component and layer.
 - [x] Pub/Sub event broker with capability filtering
 - [x] Event routing and delivery guarantees
 - [x] Async event handling with thread pool
-- [ ] Event ordering and sequencing
+- [x] Event ordering and sequencing
 
 ### Extension System
 - [ ] Extension manifest format and parser

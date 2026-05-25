@@ -19,6 +19,14 @@ struct RuntimeEvent {
     std::string granted_capability;
 };
 
+struct EventBrokerTelemetry {
+    uint64_t accepted_publishes = 0;
+    uint64_t delivered_callbacks = 0;
+    uint64_t dropped_publishes_queue_full = 0;
+    uint64_t capability_rejected_publishes = 0;
+    uint64_t capability_rejected_subscribes = 0;
+};
+
 using RuntimeEventCallback = std::function<void(const RuntimeEvent&)>;
 
 class IEventBroker {
@@ -49,5 +57,11 @@ void set_event_broker_queue_capacity_for_tests(std::size_t capacity);
 
 /// @brief Test hook: block until queued events are fully delivered.
 void flush_event_broker_for_tests();
+
+/// @brief Test hook: snapshot broker telemetry counters.
+EventBrokerTelemetry get_event_broker_telemetry_snapshot_for_tests();
+
+/// @brief Test hook: reset broker telemetry counters.
+void reset_event_broker_telemetry_for_tests();
 
 }  // namespace sentinel::core::event

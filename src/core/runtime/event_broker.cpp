@@ -9,6 +9,7 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -47,6 +48,7 @@ struct BrokerShard {
     std::mutex mutex;
     std::condition_variable cv;
     std::deque<PendingEvent> queue;
+    std::unordered_map<std::string, uint64_t> next_topic_sequence;
     bool processing = false;
 };
 
@@ -82,6 +84,7 @@ public:
             capability_token,
             required_topic_capability(topic));
         if (!verification.is_valid) {
+            telemetry_capability_rejected_subscribes_.fetch_add(1, std::memory_order_relaxed);
             error = "subscription-capability-denied";
             return false;
         }
@@ -112,6 +115,7 @@ public:
             capability_token,
             required_topic_capability(topic));
         if (!verification.is_valid) {
+            telemetry_capability_rejected_publishes_.fetch_add(1, std::memory_order_relaxed);
             error = "publish-capability-denied";
             return false;
         }
@@ -130,29 +134,32 @@ public:
             }
         }
 
-        PendingEvent pending_event;
-        pending_event.sequence = next_sequence_.fetch_add(1, std::memory_order_relaxed);
-        pending_event.event = RuntimeEvent{
-            pending_event.sequence,
-            topic,
-            payload,
-            verification.extension_id,
-            verification.capability_scope
-        };
-        pending_event.targets = std::move(matching_targets);
-
         auto& shard = shards_[select_shard(topic)];
         {
             std::lock_guard<std::mutex> lock(shard.mutex);
-            if (shard.queue.size() >= queue_capacity_) {
+            if (shard.queue.size() >= queue_capacity_.load(std::memory_order_relaxed)) {
+                telemetry_dropped_publishes_queue_full_.fetch_add(1, std::memory_order_relaxed);
                 error = "event-queue-full";
                 return false;
             }
+
+            PendingEvent pending_event;
+            const uint64_t sequence = shard.next_topic_sequence[topic]++;
+            pending_event.sequence = sequence;
+            pending_event.event = RuntimeEvent{
+                pending_event.sequence,
+                topic,
+                payload,
+                verification.extension_id,
+                verification.capability_scope
+            };
+            pending_event.targets = std::move(matching_targets);
 
             shard.queue.push_back(std::move(pending_event));
         }
 
         shard.cv.notify_one();
+        telemetry_accepted_publishes_.fetch_add(1, std::memory_order_relaxed);
         error.clear();
         return true;
     }
@@ -161,13 +168,13 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             subscriptions_.clear();
-            next_sequence_.store(0, std::memory_order_relaxed);
             queue_capacity_.store(kDefaultQueueCapacity, std::memory_order_relaxed);
         }
 
         for (auto& shard : shards_) {
             std::lock_guard<std::mutex> lock(shard.mutex);
             shard.queue.clear();
+            shard.next_topic_sequence.clear();
             shard.processing = false;
             shard.cv.notify_all();
         }
@@ -195,6 +202,24 @@ public:
 
             std::this_thread::yield();
         }
+    }
+
+    EventBrokerTelemetry telemetry_snapshot_for_tests() const {
+        return EventBrokerTelemetry{
+            telemetry_accepted_publishes_.load(std::memory_order_relaxed),
+            telemetry_delivered_callbacks_.load(std::memory_order_relaxed),
+            telemetry_dropped_publishes_queue_full_.load(std::memory_order_relaxed),
+            telemetry_capability_rejected_publishes_.load(std::memory_order_relaxed),
+            telemetry_capability_rejected_subscribes_.load(std::memory_order_relaxed)
+        };
+    }
+
+    void reset_telemetry_for_tests() {
+        telemetry_accepted_publishes_.store(0, std::memory_order_relaxed);
+        telemetry_delivered_callbacks_.store(0, std::memory_order_relaxed);
+        telemetry_dropped_publishes_queue_full_.store(0, std::memory_order_relaxed);
+        telemetry_capability_rejected_publishes_.store(0, std::memory_order_relaxed);
+        telemetry_capability_rejected_subscribes_.store(0, std::memory_order_relaxed);
     }
 
 private:
@@ -271,6 +296,7 @@ private:
             }
 
             try {
+                telemetry_delivered_callbacks_.fetch_add(1, std::memory_order_relaxed);
                 target.callback(pending_event.event);
             } catch (const std::exception& e) {
                 std::cerr << "Event broker callback failed: " << e.what() << std::endl;
@@ -284,7 +310,11 @@ private:
     std::vector<std::thread> workers_;
     std::atomic<bool> stopping_{false};
     std::atomic<std::size_t> queue_capacity_{kDefaultQueueCapacity};
-    std::atomic<uint64_t> next_sequence_{0};
+    std::atomic<uint64_t> telemetry_accepted_publishes_{0};
+    std::atomic<uint64_t> telemetry_delivered_callbacks_{0};
+    std::atomic<uint64_t> telemetry_dropped_publishes_queue_full_{0};
+    std::atomic<uint64_t> telemetry_capability_rejected_publishes_{0};
+    std::atomic<uint64_t> telemetry_capability_rejected_subscribes_{0};
 };
 
 EventBrokerImpl& ensure_broker() {
@@ -311,6 +341,14 @@ void set_event_broker_queue_capacity_for_tests(std::size_t capacity) {
 
 void flush_event_broker_for_tests() {
     ensure_broker().flush_for_tests();
+}
+
+EventBrokerTelemetry get_event_broker_telemetry_snapshot_for_tests() {
+    return ensure_broker().telemetry_snapshot_for_tests();
+}
+
+void reset_event_broker_telemetry_for_tests() {
+    ensure_broker().reset_telemetry_for_tests();
 }
 
 }  // namespace sentinel::core::event
