@@ -257,3 +257,59 @@ TEST_F(DesktopShellTest, ShowNotification) {
     auto notif_id = shell->show_notification("Title", "Message", 5000);
     EXPECT_FALSE(notif_id.empty());
 }
+
+class DesktopShellRealTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        initialize_desktop_shell();
+        auto& shell = get_desktop_shell_interface();
+        (void)shell.shutdown();
+        _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
+        ASSERT_TRUE(shell.initialize());
+    }
+
+    void TearDown() override {
+        auto& shell = get_desktop_shell_interface();
+        (void)shell.shutdown();
+        _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
+    }
+};
+
+TEST_F(DesktopShellRealTest, CreateWindowRejectsInvalidOwnerOrDimensions) {
+    auto& wm = get_desktop_shell_interface().window_manager();
+
+    WindowProperties empty_owner{"", "NoOwner", 0, 0, 640, 480, WindowState::Normal, true, false, ""};
+    EXPECT_TRUE(wm.create_window(empty_owner).empty());
+
+    WindowProperties bad_width{"", "BadWidth", 0, 0, 0, 480, WindowState::Normal, true, false, "ext1"};
+    EXPECT_TRUE(wm.create_window(bad_width).empty());
+
+    WindowProperties bad_height{"", "BadHeight", 0, 0, 640, -1, WindowState::Normal, true, false, "ext1"};
+    EXPECT_TRUE(wm.create_window(bad_height).empty());
+}
+
+TEST_F(DesktopShellRealTest, CreateDestroyCreateProducesMonotonicWindowIds) {
+    auto& wm = get_desktop_shell_interface().window_manager();
+    WindowProperties props{"", "Monotonic", 0, 0, 320, 240, WindowState::Normal, true, false, "ext_create"};
+
+    const auto first_id = wm.create_window(props);
+    ASSERT_FALSE(first_id.empty());
+    EXPECT_TRUE(wm.destroy_window(first_id));
+
+    const auto second_id = wm.create_window(props);
+    ASSERT_FALSE(second_id.empty());
+    EXPECT_NE(first_id, second_id);
+
+    EXPECT_TRUE(wm.destroy_window(second_id));
+}
+
+TEST_F(DesktopShellRealTest, CreateWindowFailsWhenPlatformAllocationFails) {
+    auto& wm = get_desktop_shell_interface().window_manager();
+    _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=1");
+
+    WindowProperties props{"", "PlatformFail", 0, 0, 320, 240, WindowState::Normal, true, false, "ext_fail"};
+    const auto window_id = wm.create_window(props);
+    EXPECT_TRUE(window_id.empty());
+
+    _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
+}

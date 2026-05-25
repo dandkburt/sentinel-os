@@ -289,6 +289,40 @@ TEST(DesktopShellIntegration, InitializationFailureModeAndRecovery) {
     EXPECT_TRUE(shell.shutdown());
 }
 
+TEST(DesktopShellIntegration, WindowCreateFailureModeAndRecovery) {
+    initialize_desktop_shell();
+    auto& shell = get_desktop_shell_interface();
+    auto& wm = shell.window_manager();
+
+    ASSERT_TRUE(shell.initialize());
+
+#ifdef _WIN32
+    _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=1");
+#else
+    setenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL", "1", 1);
+#endif
+
+    WindowProperties failing_props{"", "FailCreate", 10, 10, 400, 300, WindowState::Normal, true, false, "int_ext"};
+    EXPECT_TRUE(wm.create_window(failing_props).empty());
+
+#ifdef _WIN32
+    _putenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL=");
+#else
+    unsetenv("SENTINEL_DESKTOP_WINDOW_CREATE_FAIL");
+#endif
+
+    const auto first = wm.create_window(failing_props);
+    ASSERT_FALSE(first.empty());
+
+    EXPECT_TRUE(wm.destroy_window(first));
+    const auto second = wm.create_window(failing_props);
+    ASSERT_FALSE(second.empty());
+    EXPECT_NE(first, second);
+
+    EXPECT_TRUE(wm.destroy_window(second));
+    EXPECT_TRUE(shell.shutdown());
+}
+
 /// @brief Integration test: Runtime subsystem registration
 TEST(RuntimeIntegration, SubsystemRegistration) {
     initialize_runtime();

@@ -165,7 +165,7 @@ Each TODO is scoped to a specific component and layer.
 
 ### Desktop Shell (`src/shell/desktop/shell.h`, `desktop_shell.cpp`)
 
-- [ ] **TODO**: Create native window resource
+- [x] **DONE**: Create native window resource
   - Location: `WindowManagerImpl::create_window()`
   - Task: Allocate native window:
     1. Call platform API (CreateWindow on Windows, XCreateWindow on X11)

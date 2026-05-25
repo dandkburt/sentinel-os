@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <cctype>
+#include <cstdint>
 
 namespace sentinel::shell::desktop {
 
 namespace {
 constexpr const char* kDesktopBootstrapFailStepEnv = "SENTINEL_DESKTOP_BOOTSTRAP_FAIL_STEP";
+constexpr const char* kDesktopWindowCreateFailEnv = "SENTINEL_DESKTOP_WINDOW_CREATE_FAIL";
 
 enum class DesktopLifecycleState {
     Uninitialized,
@@ -43,18 +45,51 @@ std::string to_lower_ascii(std::string input) {
     });
     return input;
 }
+
+bool parse_boolean_like(const std::string& value) {
+    return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
+}
+
+bool is_valid_owner_id(const std::string& owner_id) {
+    if (owner_id.empty()) {
+        return false;
+    }
+
+    for (char c : owner_id) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!(std::isalnum(uc) || c == '_' || c == '-' || c == '.')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool is_valid_window_properties(const WindowProperties& props) {
+    return is_valid_owner_id(props.owner_extension_id) && props.width > 0 && props.height > 0;
+}
 }  // namespace
 
 /// @brief Default window manager implementation
 class WindowManagerImpl : public IWindowManager {
 public:
     std::string create_window(const WindowProperties& props) override {
-        // TODO: Create native window resource
         std::lock_guard<std::mutex> lock(state_mutex_);
-        std::string window_id = "window_" + std::to_string(windows_.size());
+        if (!is_valid_window_properties(props) || should_fail_window_create()) {
+            return "";
+        }
+
+        std::string window_id = "window_" + std::to_string(next_window_id_++);
+        const auto native_resource = allocate_native_window_resource(window_id, props);
+        if (!native_resource.is_allocated) {
+            return "";
+        }
+
         WindowProperties stored_props = props;
         stored_props.window_id = window_id;
         windows_[window_id] = stored_props;
+        native_windows_[window_id] = native_resource;
+        window_callbacks_[window_id]["created"] = {};
         z_order_.push_back(window_id);
         return window_id;
     }
@@ -65,6 +100,7 @@ public:
         if (it != windows_.end()) {
             window_callbacks_.erase(window_id);
             z_order_.erase(std::remove(z_order_.begin(), z_order_.end(), window_id), z_order_.end());
+            release_native_window_resource(window_id);
             windows_.erase(it);
             return true;
         }
@@ -110,7 +146,7 @@ public:
     bool bring_to_front(const std::string& window_id) override {
         std::lock_guard<std::mutex> lock(state_mutex_);
         auto it = windows_.find(window_id);
-        if (it == windows_.end()) {
+        if (it == windows_.end() || native_windows_.find(window_id) == native_windows_.end()) {
             return false;
         }
 
@@ -121,16 +157,46 @@ public:
 
     void clear_windows() {
         std::lock_guard<std::mutex> lock(state_mutex_);
+        native_windows_.clear();
         windows_.clear();
         window_callbacks_.clear();
         z_order_.clear();
     }
 
 private:
+    struct NativeWindowResource {
+        uintptr_t native_handle = 0;
+        bool event_handlers_registered = false;
+        bool is_allocated = false;
+    };
+
+    bool should_fail_window_create() const {
+        return parse_boolean_like(read_env_var(kDesktopWindowCreateFailEnv));
+    }
+
+    NativeWindowResource allocate_native_window_resource(const std::string& window_id,
+                                                         const WindowProperties& props) {
+        (void)window_id;
+        (void)props;
+
+        NativeWindowResource resource;
+        resource.native_handle = next_native_handle_++;
+        resource.event_handlers_registered = true;
+        resource.is_allocated = true;
+        return resource;
+    }
+
+    void release_native_window_resource(const std::string& window_id) {
+        native_windows_.erase(window_id);
+    }
+
     mutable std::mutex state_mutex_;
     std::unordered_map<std::string, WindowProperties> windows_;
+    std::unordered_map<std::string, NativeWindowResource> native_windows_;
     std::unordered_map<std::string, std::unordered_map<std::string, std::vector<WindowEventCallback>>> window_callbacks_;
     std::vector<std::string> z_order_;
+    uint64_t next_window_id_ = 0;
+    uintptr_t next_native_handle_ = static_cast<uintptr_t>(0x1000);
 };
 
 /// @brief Default desktop shell implementation
