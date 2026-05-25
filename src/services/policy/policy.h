@@ -38,6 +38,26 @@ struct PolicySigningSecrets {
     std::string previous_signing_key_id;
 };
 
+/// @brief Telemetry snapshot for signing key loading and fail-safe behavior.
+struct PolicySigningKeyLoadTelemetry {
+    uint64_t provider_attempts = 0;
+    uint64_t provider_successes = 0;
+    uint64_t provider_failures = 0;
+    uint64_t environment_loads = 0;
+    uint64_t reload_attempts = 0;
+    uint64_t reload_successes = 0;
+    uint64_t reload_failures = 0;
+    uint64_t fail_safe_retained_state = 0;
+    uint64_t rollback_events = 0;
+    uint64_t rollback_applies = 0;
+    uint64_t zeroization_events = 0;
+    uint64_t last_reload_timestamp = 0;
+    std::string reload_state = "idle";
+    std::string last_reload_outcome;
+    std::string last_source;
+    std::string last_error;
+};
+
 /// @brief Provider interface for retrieving policy signing secrets from secure storage.
 class IPolicySigningSecretProvider {
 public:
@@ -154,4 +174,10 @@ namespace sentinel::services::policy {
 
     /// @brief Test hook: clear signing secret provider override.
     void reset_policy_signing_secret_provider_for_tests();
+
+    /// @brief Test hook: get signing-key load telemetry snapshot.
+    PolicySigningKeyLoadTelemetry get_policy_signing_key_load_telemetry_for_tests();
+
+    /// @brief Test hook: reset signing-key load telemetry counters.
+    void reset_policy_signing_key_load_telemetry_for_tests();
 }

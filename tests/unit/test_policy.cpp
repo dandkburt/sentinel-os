@@ -588,6 +588,7 @@ TEST(PolicyCapabilityEngineReal, MissingSecretProviderFallsBackToEnvironment) {
 TEST(PolicyCapabilityEngineReal, MissingSecretProviderWithoutEnvFallbackDoesNotAdoptEnvironmentKeys) {
     initialize_policy_service();
     auto& capability_engine = get_policy_service_interface().capability_engine();
+    reset_policy_signing_key_load_telemetry_for_tests();
 
     set_policy_signing_key_for_tests("known-signing-key-without-fallback-123");
     set_policy_signing_key_id_for_tests("k33");
@@ -609,6 +610,11 @@ TEST(PolicyCapabilityEngineReal, MissingSecretProviderWithoutEnvFallbackDoesNotA
     ASSERT_EQ(segments.size(), 4);
     EXPECT_EQ(segments[2].rfind("k33-", 0), 0u);
 
+    const auto telemetry = get_policy_signing_key_load_telemetry_for_tests();
+    EXPECT_GT(telemetry.provider_failures, 0u);
+    EXPECT_GT(telemetry.fail_safe_retained_state, 0u);
+    EXPECT_EQ(telemetry.last_source, "fail-safe-retain");
+
     reset_policy_signing_secret_provider_for_tests();
     _putenv("SENTINEL_POLICY_SIGNING_KEY=");
     _putenv("SENTINEL_POLICY_SIGNING_KEY_ID=");
@@ -619,6 +625,7 @@ TEST(PolicyCapabilityEngineReal, MissingSecretProviderWithoutEnvFallbackDoesNotA
 TEST(PolicyCapabilityEngineReal, SecretProviderRotationCutover) {
     initialize_policy_service();
     auto& capability_engine = get_policy_service_interface().capability_engine();
+    reset_policy_signing_key_load_telemetry_for_tests();
 
     set_policy_signing_secret_provider_for_tests(
         std::make_shared<StaticPolicySigningSecretProvider>(
@@ -646,6 +653,102 @@ TEST(PolicyCapabilityEngineReal, SecretProviderRotationCutover) {
 
     auto after_cutover = capability_engine.verify_token(token, "file:read");
     EXPECT_FALSE(after_cutover.is_valid);
+
+    reset_policy_signing_secret_provider_for_tests();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, SecretProviderRotationCutoverSupportsRollback) {
+    initialize_policy_service();
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+    reset_policy_signing_key_load_telemetry_for_tests();
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("rollback-old-signing-key-123", "k30")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto extension_id = unique_extension_id("provider_rollback");
+    const auto old_token = capability_engine.issue_token(extension_id, {"file:read"});
+    ASSERT_FALSE(old_token.empty());
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("rollback-new-signing-key-456", "k31")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    auto token_during_new_key = capability_engine.verify_token(old_token, "file:read");
+    EXPECT_FALSE(token_during_new_key.is_valid);
+
+    // Simulate rollback to old signing material after bad cutover.
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("rollback-old-signing-key-123", "k30")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    auto token_after_rollback = capability_engine.verify_token(old_token, "file:read");
+    EXPECT_TRUE(token_after_rollback.is_valid);
+
+    const auto telemetry = get_policy_signing_key_load_telemetry_for_tests();
+    EXPECT_GT(telemetry.rollback_events, 0u);
+    EXPECT_GT(telemetry.rollback_applies, 0u);
+    EXPECT_EQ(telemetry.reload_state, "rolled_back");
+
+    reset_policy_signing_secret_provider_for_tests();
+    reset_policy_signing_key_for_tests();
+    reset_policy_previous_signing_key_for_tests();
+    reset_policy_signing_key_ids_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, ReloadFailureTelemetryIsNonSensitive) {
+    initialize_policy_service();
+    reset_policy_signing_key_load_telemetry_for_tests();
+
+    auto provider = std::make_shared<StaticPolicySigningSecretProvider>(
+        false,
+        PolicySigningSecrets{},
+        "simulated key payload leak: super-secret-key-material");
+    set_policy_signing_secret_provider_for_tests(provider);
+
+    _putenv("SENTINEL_POLICY_ALLOW_ENV_FALLBACK=");
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto telemetry = get_policy_signing_key_load_telemetry_for_tests();
+    EXPECT_GT(telemetry.reload_attempts, 0u);
+    EXPECT_GT(telemetry.reload_failures, 0u);
+    EXPECT_EQ(telemetry.reload_state, "failed");
+    EXPECT_EQ(telemetry.last_reload_outcome, "fail-safe-retain");
+    EXPECT_EQ(telemetry.last_error, "provider-unavailable-env-fallback-disabled");
+    EXPECT_EQ(telemetry.last_error.find("super-secret-key-material"), std::string::npos);
+
+    reset_policy_signing_secret_provider_for_tests();
+}
+
+TEST(PolicyCapabilityEngineReal, ReloadRotationTracksZeroizationEvents) {
+    initialize_policy_service();
+    reset_policy_signing_key_load_telemetry_for_tests();
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("zeroize-old-signing-key-123", "k40")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    set_policy_signing_secret_provider_for_tests(
+        std::make_shared<StaticPolicySigningSecretProvider>(
+            true,
+            make_secrets("zeroize-new-signing-key-456", "k41")));
+    reload_policy_signing_keys_from_environment_for_tests();
+
+    const auto telemetry = get_policy_signing_key_load_telemetry_for_tests();
+    EXPECT_GE(telemetry.reload_successes, 2u);
+    EXPECT_GT(telemetry.zeroization_events, 0u);
+    EXPECT_EQ(telemetry.reload_state, "applied");
 
     reset_policy_signing_secret_provider_for_tests();
     reset_policy_signing_key_for_tests();

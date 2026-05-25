@@ -39,6 +39,72 @@ std::string g_signing_key_id = kDefaultSigningKeyId;
 std::string g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
 std::once_flag g_policy_key_env_init_once;
 std::shared_ptr<IPolicySigningSecretProvider> g_policy_signing_secret_provider_for_tests;
+PolicySigningKeyLoadTelemetry g_signing_key_load_telemetry;
+
+uint64_t unix_timestamp_now_seconds() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(duration_cast<seconds>(system_clock::now().time_since_epoch()).count());
+}
+
+void secure_zero_memory(char* data, size_t length) {
+    volatile char* p = reinterpret_cast<volatile char*>(data);
+    while (length > 0) {
+        *p++ = 0;
+        --length;
+    }
+}
+
+void secure_wipe_string(std::string& value) {
+    if (value.empty()) {
+        return;
+    }
+
+    secure_zero_memory(value.data(), value.size());
+    value.clear();
+}
+
+void secure_clear_key_with_telemetry(std::string& value) {
+    if (!value.empty()) {
+        ++g_signing_key_load_telemetry.zeroization_events;
+    }
+    secure_wipe_string(value);
+}
+
+void secure_replace_key_with_telemetry(std::string& value, const std::string& replacement) {
+    if (value != replacement) {
+        secure_clear_key_with_telemetry(value);
+        value = replacement;
+    }
+}
+
+void scrub_secrets_payload(PolicySigningSecrets& secrets) {
+    secure_wipe_string(secrets.signing_key);
+    secure_wipe_string(secrets.previous_signing_key);
+}
+
+void mark_reload_attempt_locked() {
+    ++g_signing_key_load_telemetry.reload_attempts;
+    g_signing_key_load_telemetry.reload_state = "reloading";
+    g_signing_key_load_telemetry.last_reload_timestamp = unix_timestamp_now_seconds();
+}
+
+void mark_reload_success_locked(const char* outcome, bool rollback_applied) {
+    ++g_signing_key_load_telemetry.reload_successes;
+    g_signing_key_load_telemetry.reload_state = rollback_applied ? "rolled_back" : "applied";
+    g_signing_key_load_telemetry.last_reload_outcome = outcome;
+    g_signing_key_load_telemetry.last_reload_timestamp = unix_timestamp_now_seconds();
+    if (rollback_applied) {
+        ++g_signing_key_load_telemetry.rollback_applies;
+    }
+}
+
+void mark_reload_failure_locked(const char* outcome, const char* error_code) {
+    ++g_signing_key_load_telemetry.reload_failures;
+    g_signing_key_load_telemetry.reload_state = "failed";
+    g_signing_key_load_telemetry.last_reload_outcome = outcome;
+    g_signing_key_load_telemetry.last_error = error_code;
+    g_signing_key_load_telemetry.last_reload_timestamp = unix_timestamp_now_seconds();
+}
 
 bool capability_matches(const std::string& granted_capability, const std::string& required_capability) {
     if (granted_capability == "*") {
@@ -214,6 +280,24 @@ std::string read_env_var(const char* name) {
 
 bool parse_boolean_like(const std::string& value) {
     return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
+}
+
+int parse_key_generation(const std::string& key_id) {
+    if (key_id.size() < 2 || key_id[0] != 'k') {
+        return -1;
+    }
+    for (size_t i = 1; i < key_id.size(); ++i) {
+        const unsigned char uc = static_cast<unsigned char>(key_id[i]);
+        if (!std::isdigit(uc)) {
+            return -1;
+        }
+    }
+
+    try {
+        return std::stoi(key_id.substr(1));
+    } catch (...) {
+        return -1;
+    }
 }
 
 std::string lowercase_ascii(std::string value) {
@@ -442,34 +526,51 @@ std::vector<std::shared_ptr<IPolicySigningSecretProvider>> configured_builtin_pr
 }
 
 bool apply_signing_keys_from_provider(IPolicySigningSecretProvider& provider) {
+    {
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        ++g_signing_key_load_telemetry.provider_attempts;
+        g_signing_key_load_telemetry.last_source = std::string("provider:") + provider.name();
+        g_signing_key_load_telemetry.last_error.clear();
+    }
+
     PolicySigningSecrets secrets;
     std::string error;
     if (!provider.load_signing_secrets(secrets, error)) {
-        if (!error.empty()) {
-            std::cerr << "Policy signing secret provider '" << provider.name() << "' unavailable: " << error << std::endl;
-        }
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        ++g_signing_key_load_telemetry.provider_failures;
+        g_signing_key_load_telemetry.last_error = "provider-unavailable";
+        std::cerr << "Policy signing secret provider '" << provider.name() << "' unavailable." << std::endl;
+        scrub_secrets_payload(secrets);
+        secure_wipe_string(error);
         return false;
     }
 
     if (!secrets.has_signing_key || !is_valid_signing_key_material(secrets.signing_key)) {
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        ++g_signing_key_load_telemetry.provider_failures;
+        g_signing_key_load_telemetry.last_error = "invalid-signing-key";
         std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid SIGNING_KEY." << std::endl;
+        scrub_secrets_payload(secrets);
+        secure_wipe_string(error);
         return false;
     }
 
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    g_signing_key = secrets.signing_key;
+    ++g_signing_key_load_telemetry.provider_successes;
+    const std::string old_signing_key_id = g_signing_key_id;
+    secure_replace_key_with_telemetry(g_signing_key, secrets.signing_key);
 
     if (secrets.has_previous_signing_key) {
         if (secrets.previous_signing_key.empty()) {
-            g_previous_signing_key.clear();
+            secure_clear_key_with_telemetry(g_previous_signing_key);
         } else if (is_valid_signing_key_material(secrets.previous_signing_key)) {
-            g_previous_signing_key = secrets.previous_signing_key;
+            secure_replace_key_with_telemetry(g_previous_signing_key, secrets.previous_signing_key);
         } else {
             std::cerr << "Policy signing secret provider '" << provider.name() << "' returned invalid PREVIOUS_SIGNING_KEY; clearing previous key." << std::endl;
-            g_previous_signing_key.clear();
+            secure_clear_key_with_telemetry(g_previous_signing_key);
         }
     } else {
-        g_previous_signing_key.clear();
+        secure_clear_key_with_telemetry(g_previous_signing_key);
     }
 
     if (secrets.has_signing_key_id) {
@@ -490,21 +591,35 @@ bool apply_signing_keys_from_provider(IPolicySigningSecretProvider& provider) {
         g_previous_signing_key_id = kDefaultPreviousSigningKeyId;
     }
 
+    const int previous_generation = parse_key_generation(old_signing_key_id);
+    const int next_generation = parse_key_generation(g_signing_key_id);
+    if (previous_generation >= 0 && next_generation >= 0 && next_generation < previous_generation) {
+        ++g_signing_key_load_telemetry.rollback_events;
+    }
+
+    scrub_secrets_payload(secrets);
+    secure_wipe_string(error);
+
     return true;
 }
 
 void apply_signing_keys_from_environment() {
-    const std::string primary_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY");
-    const std::string previous_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY");
+    std::string primary_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY");
+    std::string previous_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY");
     const std::string primary_key_id_env = read_env_var("SENTINEL_POLICY_SIGNING_KEY_ID");
     const std::string previous_key_id_env = read_env_var("SENTINEL_POLICY_PREVIOUS_SIGNING_KEY_ID");
 
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    ++g_signing_key_load_telemetry.environment_loads;
+    g_signing_key_load_telemetry.last_source = "environment";
+    g_signing_key_load_telemetry.last_error.clear();
+
+    const std::string old_signing_key_id = g_signing_key_id;
 
     if (!primary_env.empty()) {
         const std::string primary_candidate(primary_env);
         if (is_valid_signing_key_material(primary_candidate)) {
-            g_signing_key = primary_candidate;
+            secure_replace_key_with_telemetry(g_signing_key, primary_candidate);
         } else {
             std::cerr << "Policy signing key from environment failed validation; keeping existing key." << std::endl;
         }
@@ -513,10 +628,10 @@ void apply_signing_keys_from_environment() {
     if (!previous_env.empty()) {
         const std::string previous_candidate(previous_env);
         if (is_valid_signing_key_material(previous_candidate)) {
-            g_previous_signing_key = previous_candidate;
+            secure_replace_key_with_telemetry(g_previous_signing_key, previous_candidate);
         } else {
             std::cerr << "Policy previous signing key from environment failed validation; disabling previous key." << std::endl;
-            g_previous_signing_key.clear();
+            secure_clear_key_with_telemetry(g_previous_signing_key);
         }
     }
 
@@ -535,12 +650,31 @@ void apply_signing_keys_from_environment() {
             std::cerr << "Policy previous signing key id from environment failed validation; keeping existing id." << std::endl;
         }
     }
+
+    const int previous_generation = parse_key_generation(old_signing_key_id);
+    const int next_generation = parse_key_generation(g_signing_key_id);
+    if (previous_generation >= 0 && next_generation >= 0 && next_generation < previous_generation) {
+        ++g_signing_key_load_telemetry.rollback_events;
+    }
+
+    secure_wipe_string(primary_env);
+    secure_wipe_string(previous_env);
 }
 
 void apply_signing_keys_from_config_sources() {
+    uint64_t rollback_events_before = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        rollback_events_before = g_signing_key_load_telemetry.rollback_events;
+        mark_reload_attempt_locked();
+    }
+
     if (parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_KEYS_ONLY")) ||
         configured_secret_provider_mode() == PolicySecretProviderMode::EnvironmentOnly) {
         apply_signing_keys_from_environment();
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        const bool rollback_applied = g_signing_key_load_telemetry.rollback_events > rollback_events_before;
+        mark_reload_success_locked("environment-only", rollback_applied);
         return;
     }
 
@@ -561,7 +695,19 @@ void apply_signing_keys_from_config_sources() {
 
     if (!provider_applied && parse_boolean_like(read_env_var("SENTINEL_POLICY_ALLOW_ENV_FALLBACK"))) {
         apply_signing_keys_from_environment();
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        const bool rollback_applied = g_signing_key_load_telemetry.rollback_events > rollback_events_before;
+        mark_reload_success_locked("environment-fallback", rollback_applied);
+    } else if (provider_applied) {
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        const bool rollback_applied = g_signing_key_load_telemetry.rollback_events > rollback_events_before;
+        mark_reload_success_locked("provider", rollback_applied);
     } else if (!provider_applied) {
+        std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+        ++g_signing_key_load_telemetry.fail_safe_retained_state;
+        g_signing_key_load_telemetry.last_source = "fail-safe-retain";
+        g_signing_key_load_telemetry.last_error = "provider-unavailable-env-fallback-disabled";
+        mark_reload_failure_locked("fail-safe-retain", "provider-unavailable-env-fallback-disabled");
         std::cerr << "Policy signing secret provider unavailable and env fallback disabled; retaining existing in-memory keys." << std::endl;
     }
 }
@@ -1129,22 +1275,22 @@ IPolicyService& get_policy_service_interface() {
 
 void set_policy_signing_key_for_tests(const std::string& key) {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    g_signing_key = key.empty() ? kDefaultSigningKey : key;
+    secure_replace_key_with_telemetry(g_signing_key, key.empty() ? std::string(kDefaultSigningKey) : key);
 }
 
 void reset_policy_signing_key_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    g_signing_key = kDefaultSigningKey;
+    secure_replace_key_with_telemetry(g_signing_key, kDefaultSigningKey);
 }
 
 void set_policy_previous_signing_key_for_tests(const std::string& key) {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    g_previous_signing_key = key;
+    secure_replace_key_with_telemetry(g_previous_signing_key, key);
 }
 
 void reset_policy_previous_signing_key_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
-    g_previous_signing_key.clear();
+    secure_clear_key_with_telemetry(g_previous_signing_key);
 }
 
 void set_policy_signing_key_id_for_tests(const std::string& key_id) {
@@ -1185,6 +1331,16 @@ void set_policy_signing_secret_provider_for_tests(std::shared_ptr<IPolicySigning
 void reset_policy_signing_secret_provider_for_tests() {
     std::lock_guard<std::mutex> lock(g_signing_key_mutex);
     g_policy_signing_secret_provider_for_tests.reset();
+}
+
+PolicySigningKeyLoadTelemetry get_policy_signing_key_load_telemetry_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    return g_signing_key_load_telemetry;
+}
+
+void reset_policy_signing_key_load_telemetry_for_tests() {
+    std::lock_guard<std::mutex> lock(g_signing_key_mutex);
+    g_signing_key_load_telemetry = PolicySigningKeyLoadTelemetry{};
 }
 
 }  // namespace sentinel::services::policy
