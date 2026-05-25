@@ -37,6 +37,7 @@ protected:
     void SetUp() override {
         initialize_extension_registry();
         reset_extension_registry_for_tests();
+        reset_extension_lifecycle_fail_step_for_tests();
 
         temp_dir_ = std::filesystem::temp_directory_path() / "sentinel_extension_registry_tests";
         std::error_code ec;
@@ -46,6 +47,7 @@ protected:
     }
 
     void TearDown() override {
+        reset_extension_lifecycle_fail_step_for_tests();
         reset_extension_registry_for_tests();
         std::error_code ec;
         std::filesystem::remove_all(temp_dir_, ec);
@@ -161,6 +163,121 @@ TEST_F(ExtensionRegistryRealTest, SnapshotDoesNotMutateOnFailedRegistration) {
     EXPECT_EQ(after[0].version, before[0].version);
     EXPECT_EQ(after[0].entry_point, before[0].entry_point);
     EXPECT_EQ(after[0].source_path, before[0].source_path);
+}
+
+TEST_F(ExtensionRegistryRealTest, LifecycleHappyPathRegisterLoadEnableDisableUnload) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "lifecycle.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("life.ext", "1.0.0", "Lifecycle", "./life.js")));
+
+    std::string error;
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+    ASSERT_TRUE(registry.load_extension("life.ext", error));
+    ASSERT_TRUE(registry.enable_extension("life.ext", error));
+    ASSERT_TRUE(registry.disable_extension("life.ext", error));
+    ASSERT_TRUE(registry.unload_extension("life.ext", error));
+    EXPECT_TRUE(error.empty());
+
+    ExtensionLifecycleState state = ExtensionLifecycleState::Registered;
+    ASSERT_TRUE(registry.get_extension_state("life.ext", state, error));
+    EXPECT_EQ(state, ExtensionLifecycleState::Unloaded);
+}
+
+TEST_F(ExtensionRegistryRealTest, LifecycleIdempotencyErrorsAreDeterministic) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "idempotent.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("idem.ext", "1.0.0", "Idem", "./idem.js")));
+
+    std::string error;
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+
+    ASSERT_TRUE(registry.load_extension("idem.ext", error));
+    ASSERT_FALSE(registry.load_extension("idem.ext", error));
+    EXPECT_EQ(error, "already-loaded");
+
+    ASSERT_TRUE(registry.enable_extension("idem.ext", error));
+    ASSERT_FALSE(registry.enable_extension("idem.ext", error));
+    EXPECT_EQ(error, "already-enabled");
+
+    ASSERT_TRUE(registry.disable_extension("idem.ext", error));
+    ASSERT_FALSE(registry.disable_extension("idem.ext", error));
+    EXPECT_EQ(error, "already-disabled");
+
+    ASSERT_TRUE(registry.unload_extension("idem.ext", error));
+    ASSERT_FALSE(registry.unload_extension("idem.ext", error));
+    EXPECT_EQ(error, "already-unloaded");
+}
+
+TEST_F(ExtensionRegistryRealTest, InvalidLifecycleTransitionsFailDeterministically) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "invalid-transitions.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("invalid.ext", "1.0.0", "Invalid", "./invalid.js")));
+
+    std::string error;
+    ASSERT_FALSE(registry.load_extension("missing.ext", error));
+    EXPECT_EQ(error, "extension-not-found");
+
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+
+    ASSERT_FALSE(registry.enable_extension("invalid.ext", error));
+    EXPECT_EQ(error, "invalid-state-transition");
+
+    ASSERT_FALSE(registry.unload_extension("invalid.ext", error));
+    EXPECT_EQ(error, "already-unloaded");
+
+    ASSERT_TRUE(registry.load_extension("invalid.ext", error));
+    ASSERT_TRUE(registry.enable_extension("invalid.ext", error));
+
+    ASSERT_FALSE(registry.unload_extension("invalid.ext", error));
+    EXPECT_EQ(error, "invalid-state-transition");
+}
+
+TEST_F(ExtensionRegistryRealTest, FailureInjectionRollsBackStateAndKeepsSnapshotStable) {
+    auto& registry = get_extension_registry_interface();
+
+    const auto manifest_path = temp_dir_ / "failure.manifest";
+    ASSERT_TRUE(write_text_file(manifest_path, make_manifest("failure.ext", "1.0.0", "Failure", "./failure.js")));
+
+    std::string error;
+    ASSERT_TRUE(registry.register_extension_from_manifest_path(manifest_path.string(), error));
+
+    const auto before = registry.list_registered_extensions();
+    ASSERT_EQ(before.size(), 1u);
+    ASSERT_EQ(before[0].lifecycle_state, ExtensionLifecycleState::Registered);
+
+    set_extension_lifecycle_fail_step_for_tests("load");
+    ASSERT_FALSE(registry.load_extension("failure.ext", error));
+    EXPECT_EQ(error, "load-failed");
+
+    ExtensionLifecycleState state = ExtensionLifecycleState::Registered;
+    ASSERT_TRUE(registry.get_extension_state("failure.ext", state, error));
+    EXPECT_EQ(state, ExtensionLifecycleState::Registered);
+
+    const auto after_failed_load = registry.list_registered_extensions();
+    ASSERT_EQ(after_failed_load.size(), 1u);
+    EXPECT_EQ(after_failed_load[0].id, before[0].id);
+    EXPECT_EQ(after_failed_load[0].version, before[0].version);
+    EXPECT_EQ(after_failed_load[0].source_path, before[0].source_path);
+
+    reset_extension_lifecycle_fail_step_for_tests();
+    ASSERT_TRUE(registry.load_extension("failure.ext", error));
+    ASSERT_TRUE(registry.enable_extension("failure.ext", error));
+
+    set_extension_lifecycle_fail_step_for_tests("disable");
+    ASSERT_FALSE(registry.disable_extension("failure.ext", error));
+    EXPECT_EQ(error, "disable-failed");
+
+    ASSERT_TRUE(registry.get_extension_state("failure.ext", state, error));
+    EXPECT_EQ(state, ExtensionLifecycleState::Enabled);
+
+    const auto after_failed_disable = registry.list_registered_extensions();
+    ASSERT_EQ(after_failed_disable.size(), 1u);
+    EXPECT_EQ(after_failed_disable[0].id, before[0].id);
+    EXPECT_EQ(after_failed_disable[0].version, before[0].version);
+    EXPECT_EQ(after_failed_disable[0].source_path, before[0].source_path);
 }
 
 }  // namespace

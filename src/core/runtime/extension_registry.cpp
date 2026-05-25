@@ -5,6 +5,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <unordered_map>
 
 namespace sentinel::core {
@@ -25,6 +26,10 @@ std::string normalize_source_path(const fs::path& path) {
 
 bool has_manifest_extension(const fs::path& path) {
     return path.extension() == ".manifest";
+}
+
+bool is_valid_lifecycle_fail_step(const std::string& step) {
+    return step.empty() || step == "load" || step == "enable" || step == "disable" || step == "unload";
 }
 
 std::string map_manifest_error_to_registry_error(const std::string& manifest_error) {
@@ -77,7 +82,8 @@ public:
             manifest.entry_point,
             manifest.permissions,
             manifest.dependencies,
-            normalize_source_path(source_path)
+            normalize_source_path(source_path),
+            ExtensionLifecycleState::Registered
         };
 
         {
@@ -161,14 +167,182 @@ public:
         return true;
     }
 
+    bool load_extension(const std::string& extension_id,
+                        std::string& error) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        ExtensionRecord& record = it->second;
+        if (record.lifecycle_state == ExtensionLifecycleState::Loaded ||
+            record.lifecycle_state == ExtensionLifecycleState::Enabled ||
+            record.lifecycle_state == ExtensionLifecycleState::Disabled) {
+            error = "already-loaded";
+            return false;
+        }
+
+        if (record.lifecycle_state != ExtensionLifecycleState::Registered &&
+            record.lifecycle_state != ExtensionLifecycleState::Unloaded &&
+            record.lifecycle_state != ExtensionLifecycleState::Failed) {
+            error = "invalid-state-transition";
+            return false;
+        }
+
+        const ExtensionLifecycleState prior = record.lifecycle_state;
+        if (lifecycle_fail_step_ == "load") {
+            record.lifecycle_state = prior;
+            error = "load-failed";
+            return false;
+        }
+
+        record.lifecycle_state = ExtensionLifecycleState::Loaded;
+        error.clear();
+        return true;
+    }
+
+    bool enable_extension(const std::string& extension_id,
+                          std::string& error) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        ExtensionRecord& record = it->second;
+        if (record.lifecycle_state == ExtensionLifecycleState::Enabled) {
+            error = "already-enabled";
+            return false;
+        }
+        if (record.lifecycle_state != ExtensionLifecycleState::Loaded &&
+            record.lifecycle_state != ExtensionLifecycleState::Disabled) {
+            error = "invalid-state-transition";
+            return false;
+        }
+
+        const ExtensionLifecycleState prior = record.lifecycle_state;
+        if (lifecycle_fail_step_ == "enable") {
+            record.lifecycle_state = prior;
+            error = "enable-failed";
+            return false;
+        }
+
+        record.lifecycle_state = ExtensionLifecycleState::Enabled;
+        error.clear();
+        return true;
+    }
+
+    bool disable_extension(const std::string& extension_id,
+                           std::string& error) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        ExtensionRecord& record = it->second;
+        if (record.lifecycle_state == ExtensionLifecycleState::Disabled) {
+            error = "already-disabled";
+            return false;
+        }
+        if (record.lifecycle_state != ExtensionLifecycleState::Enabled) {
+            error = "invalid-state-transition";
+            return false;
+        }
+
+        const ExtensionLifecycleState prior = record.lifecycle_state;
+        if (lifecycle_fail_step_ == "disable") {
+            record.lifecycle_state = prior;
+            error = "disable-failed";
+            return false;
+        }
+
+        record.lifecycle_state = ExtensionLifecycleState::Disabled;
+        error.clear();
+        return true;
+    }
+
+    bool unload_extension(const std::string& extension_id,
+                          std::string& error) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        ExtensionRecord& record = it->second;
+        if (record.lifecycle_state == ExtensionLifecycleState::Enabled) {
+            error = "invalid-state-transition";
+            return false;
+        }
+        if (record.lifecycle_state == ExtensionLifecycleState::Registered ||
+            record.lifecycle_state == ExtensionLifecycleState::Unloaded) {
+            error = "already-unloaded";
+            return false;
+        }
+        if (record.lifecycle_state != ExtensionLifecycleState::Loaded &&
+            record.lifecycle_state != ExtensionLifecycleState::Disabled &&
+            record.lifecycle_state != ExtensionLifecycleState::Failed) {
+            error = "invalid-state-transition";
+            return false;
+        }
+
+        const ExtensionLifecycleState prior = record.lifecycle_state;
+        if (lifecycle_fail_step_ == "unload") {
+            record.lifecycle_state = prior;
+            error = "unload-failed";
+            return false;
+        }
+
+        record.lifecycle_state = ExtensionLifecycleState::Unloaded;
+        error.clear();
+        return true;
+    }
+
+    bool get_extension_state(const std::string& extension_id,
+                             ExtensionLifecycleState& out_state,
+                             std::string& error) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = records_.find(extension_id);
+        if (it == records_.end()) {
+            error = "extension-not-found";
+            return false;
+        }
+
+        out_state = it->second.lifecycle_state;
+        error.clear();
+        return true;
+    }
+
     void reset_for_tests() {
         std::lock_guard<std::mutex> lock(mutex_);
         records_.clear();
+        lifecycle_fail_step_.clear();
+    }
+
+    void set_lifecycle_fail_step_for_tests(const std::string& step) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!is_valid_lifecycle_fail_step(step)) {
+            lifecycle_fail_step_.clear();
+            return;
+        }
+        lifecycle_fail_step_ = step;
+    }
+
+    void reset_lifecycle_fail_step_for_tests() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lifecycle_fail_step_.clear();
     }
 
 private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, ExtensionRecord> records_;
+    std::string lifecycle_fail_step_;
 };
 
 ExtensionRegistryImpl& ensure_registry() {
@@ -188,6 +362,14 @@ void initialize_extension_registry() {
 
 void reset_extension_registry_for_tests() {
     ensure_registry().reset_for_tests();
+}
+
+void set_extension_lifecycle_fail_step_for_tests(const std::string& step) {
+    ensure_registry().set_lifecycle_fail_step_for_tests(step);
+}
+
+void reset_extension_lifecycle_fail_step_for_tests() {
+    ensure_registry().reset_lifecycle_fail_step_for_tests();
 }
 
 }  // namespace sentinel::core
