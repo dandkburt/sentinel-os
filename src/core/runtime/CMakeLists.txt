@@ -5,6 +5,8 @@ add_library(core_runtime STATIC
     event_broker.h
     extension_manifest.cpp
     extension_manifest.h
+    extension_registry.cpp
+    extension_registry.h
     runtime_config.cpp
     runtime_config.h
 )
