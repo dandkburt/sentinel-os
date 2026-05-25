@@ -391,6 +391,39 @@ TEST(RuntimeIntegration, RuntimeReconfigurationTriggerAppliesCandidate) {
     std::filesystem::remove(config_path, ignored);
 }
 
+TEST(RuntimeIntegration, RuntimeReconfigurationRejectsInvalidVersionAndPreservesState) {
+    initialize_runtime();
+    auto& bootstrap = get_runtime_interface().bootstrap();
+    ASSERT_TRUE(bootstrap.initialize().is_success());
+
+    const auto baseline = get_runtime_config_snapshot_for_tests();
+
+    const auto config_path = std::filesystem::temp_directory_path() /
+                             "sentinel_runtime_integration_invalid_reconfig.conf";
+    {
+        std::ofstream out(config_path.string(), std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        out << "version = 99\n";
+        out << "log_level = debug\n";
+        out << "enable_event_broker = false\n";
+    }
+
+    std::string error;
+    EXPECT_FALSE(trigger_runtime_reconfiguration(config_path.string(), error));
+    EXPECT_EQ(error, "unsupported-config-version");
+
+    const auto after_failure = get_runtime_config_snapshot_for_tests();
+    EXPECT_EQ(after_failure.config_version, baseline.config_version);
+    EXPECT_EQ(after_failure.log_level, baseline.log_level);
+    EXPECT_EQ(after_failure.enable_policy, baseline.enable_policy);
+    EXPECT_EQ(after_failure.enable_namespace, baseline.enable_namespace);
+    EXPECT_EQ(after_failure.enable_event_broker, baseline.enable_event_broker);
+    EXPECT_EQ(after_failure.shutdown_timeout_ms, baseline.shutdown_timeout_ms);
+
+    std::error_code ignored;
+    std::filesystem::remove(config_path, ignored);
+}
+
 /// @brief Integration test: Capability token workflow
 TEST(CapabilityWorkflowIntegration, IssueVerifyRevoke) {
     initialize_policy_service();
