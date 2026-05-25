@@ -7,7 +7,7 @@ Each TODO is scoped to a specific component and layer.
 
 ### Core Runtime (`src/core/runtime/bootstrap.h`, `runtime.cpp`)
 
-- [ ] **TODO**: Initialize core subsystems
+- [x] **DONE**: Initialize core subsystems
   - Location: `BootstrapImpl::initialize()`
   - Task: Implement initialization sequence:
     1. Load configuration from file (TOML/JSON)

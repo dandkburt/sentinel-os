@@ -1,10 +1,13 @@
 #include "bootstrap.h"
 #include "../../services/policy/policy.h"
+#include "../../services/namespace/namespace.h"
 #include <unordered_map>
 #include <iostream>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <cstdlib>
+#include <algorithm>
 
 namespace sentinel::core {
 
@@ -30,6 +33,34 @@ ParsedCapability parse_capability_request(const std::string& subsystem_name, con
     }
     return parsed;
 }
+
+std::string read_env_var(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&value, &len, name) != 0 || value == nullptr) {
+        return "";
+    }
+    std::string result(value);
+    free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value == nullptr ? "" : std::string(value);
+#endif
+}
+
+std::string lowercase_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool should_fail_bootstrap_step(const std::string& step_name) {
+    const std::string configured_step = lowercase_ascii(read_env_var("SENTINEL_BOOTSTRAP_FAIL_STEP"));
+    return !configured_step.empty() && configured_step == step_name;
+}
 }  // namespace
 
 /// @brief Default bootstrap implementation
@@ -45,6 +76,54 @@ public:
         try {
             // Fire "pre_init" event to allow subsystems to initialize
             fire_lifecycle_event("pre_init");
+
+            const auto run_step = [this](const std::string& step_name, const std::function<void()>& action) -> BootstrapResult {
+                fire_lifecycle_event(std::string("init_step:") + step_name);
+
+                if (should_fail_bootstrap_step(step_name)) {
+                    initialized_ = false;
+                    fire_lifecycle_event(std::string("init_failed:") + step_name);
+                    return {BootstrapStatus::InitializationFailed, std::string("Bootstrap forced failure at step: ") + step_name};
+                }
+
+                action();
+                return {BootstrapStatus::Success, ""};
+            };
+
+            BootstrapResult step_result = run_step("configuration", []() {
+                // TODO: Wire real configuration loading.
+            });
+            if (!step_result.is_success()) {
+                return step_result;
+            }
+
+            step_result = run_step("logging", []() {
+                // TODO: Wire real logging initialization.
+            });
+            if (!step_result.is_success()) {
+                return step_result;
+            }
+
+            step_result = run_step("policy", []() {
+                sentinel::services::policy::initialize_policy_service();
+            });
+            if (!step_result.is_success()) {
+                return step_result;
+            }
+
+            step_result = run_step("namespace", []() {
+                sentinel::services::namespace_service::initialize_namespace_service();
+            });
+            if (!step_result.is_success()) {
+                return step_result;
+            }
+
+            step_result = run_step("event_broker", []() {
+                // TODO: Wire event broker registration.
+            });
+            if (!step_result.is_success()) {
+                return step_result;
+            }
             
             // Mark runtime as initialized
             initialized_ = true;

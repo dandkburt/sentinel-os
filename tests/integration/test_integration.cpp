@@ -26,6 +26,34 @@ TEST(BootstrapIntegration, InitializeAllSubsystems) {
     EXPECT_EQ(bootstrap.get_version(), "0.1.0");
 }
 
+TEST(BootstrapIntegration, InitializationFailureStepAndRecovery) {
+    initialize_runtime();
+    auto& runtime = get_runtime_interface();
+    auto& bootstrap = runtime.bootstrap();
+
+    EXPECT_TRUE(bootstrap.shutdown().is_success());
+
+#ifdef _WIN32
+    _putenv("SENTINEL_BOOTSTRAP_FAIL_STEP=policy");
+#else
+    setenv("SENTINEL_BOOTSTRAP_FAIL_STEP", "policy", 1);
+#endif
+
+    auto failed = bootstrap.initialize();
+    EXPECT_EQ(failed.status, BootstrapStatus::InitializationFailed);
+    EXPECT_FALSE(bootstrap.is_ready());
+
+#ifdef _WIN32
+    _putenv("SENTINEL_BOOTSTRAP_FAIL_STEP=");
+#else
+    unsetenv("SENTINEL_BOOTSTRAP_FAIL_STEP");
+#endif
+
+    auto recovered = bootstrap.initialize();
+    EXPECT_TRUE(recovered.is_success());
+    EXPECT_TRUE(bootstrap.is_ready());
+}
+
 /// @brief Integration test: Namespace service is initialized
 TEST(NamespaceIntegration, NamespaceServiceInitialization) {
     initialize_namespace_service();

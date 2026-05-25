@@ -21,6 +21,7 @@ target_include_directories(sentinel_runtime_contract
 target_link_libraries(sentinel_runtime_contract
     PRIVATE
         core_runtime
+    namespace_service
         policy_service
 )
 
