@@ -51,7 +51,7 @@ Each TODO is scoped to a specific component and layer.
 
 ### Policy Service (`src/services/policy/policy.h`, `policy_service.cpp`)
 
-- [ ] **TODO**: Implement cryptographic token verification
+- [x] **DONE**: Implement cryptographic token verification
   - Location: `CapabilityEngineImpl::verify_token()`
   - Task: Add HMAC-SHA256 signature verification:
     1. Parse token format (header.payload.signature)
@@ -62,7 +62,7 @@ Each TODO is scoped to a specific component and layer.
   - Depends: OpenSSL/Crypto++ library
   - Estimated effort: 2 days
 
-- [ ] **TODO**: Generate cryptographically secure tokens
+- [x] **DONE**: Generate cryptographically secure tokens
   - Location: `CapabilityEngineImpl::issue_token()`
   - Task: Create and sign new capability tokens:
     1. Generate random token ID

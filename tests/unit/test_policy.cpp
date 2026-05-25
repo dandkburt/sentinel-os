@@ -6,6 +6,8 @@
 #include <chrono>
 #include <atomic>
 #include <utility>
+#include <set>
+#include <cctype>
 
 using namespace sentinel::services::policy;
 
@@ -265,6 +267,36 @@ TEST(PolicyCapabilityEngineReal, RejectRevokedToken) {
 
     auto result = capability_engine.verify_token(token, "file:read");
     EXPECT_FALSE(result.is_valid);
+}
+
+TEST(PolicyCapabilityEngineReal, TokenIdsUseSecureRandomSuffixAndRemainUnique) {
+    initialize_policy_service();
+    reset_policy_signing_key_ids_for_tests();
+    set_policy_signing_key_id_for_tests("k77");
+    auto& capability_engine = get_policy_service_interface().capability_engine();
+
+    std::set<std::string> token_ids;
+    for (int i = 0; i < 8; ++i) {
+        const auto token = capability_engine.issue_token(unique_extension_id("rand"), {"file:read"});
+        ASSERT_FALSE(token.empty());
+
+        auto segments = split_token(token);
+        ASSERT_EQ(segments.size(), 4);
+
+        const std::string& token_id = segments[2];
+        ASSERT_EQ(token_id.rfind("k77-", 0), 0u);
+        ASSERT_EQ(token_id.size(), std::string("k77-").size() + 24u);
+
+        for (size_t index = std::string("k77-").size(); index < token_id.size(); ++index) {
+            const unsigned char uc = static_cast<unsigned char>(token_id[index]);
+            EXPECT_TRUE(std::isxdigit(uc));
+        }
+
+        token_ids.insert(token_id);
+    }
+
+    EXPECT_EQ(token_ids.size(), 8u);
+    reset_policy_signing_key_ids_for_tests();
 }
 
 TEST(PolicyCapabilityEngineReal, AcceptExactCapability) {

@@ -14,11 +14,13 @@
 #include <utility>
 #include <filesystem>
 #include <fstream>
+#include <random>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
 #include <wincred.h>
+#include <bcrypt.h>
 #endif
 
 namespace sentinel::services::policy {
@@ -32,6 +34,7 @@ constexpr const char* kDefaultPolicySecretFilePath = "C:\\ProgramData\\SentinelO
 constexpr const char* kDefaultPolicySecretTargetPrefix = "SentinelOS/Policy";
 constexpr size_t kMinimumSigningKeyLength = 16;
 constexpr size_t kMaximumSigningKeyIdLength = 16;
+constexpr size_t kTokenIdRandomBytes = 12;
 std::mutex g_signing_key_mutex;
 std::string g_signing_key = kDefaultSigningKey;
 std::string g_previous_signing_key;
@@ -735,6 +738,34 @@ std::string bytes_to_hex(const std::vector<uint8_t>& bytes) {
     return ss.str();
 }
 
+bool fill_secure_random_bytes(std::vector<uint8_t>& bytes) {
+    if (bytes.empty()) {
+        return true;
+    }
+
+#ifdef _WIN32
+    const NTSTATUS status = BCryptGenRandom(nullptr,
+                                            bytes.data(),
+                                            static_cast<ULONG>(bytes.size()),
+                                            BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    return status == 0;
+#else
+    std::random_device rd;
+    for (auto& b : bytes) {
+        b = static_cast<uint8_t>(rd() & 0xff);
+    }
+    return true;
+#endif
+}
+
+std::string secure_random_token_suffix_hex(size_t random_bytes) {
+    std::vector<uint8_t> bytes(random_bytes, 0);
+    if (!fill_secure_random_bytes(bytes)) {
+        return "";
+    }
+    return bytes_to_hex(bytes);
+}
+
 inline uint32_t rotr(uint32_t value, uint32_t shift) {
     return (value >> shift) | (value << (32 - shift));
 }
@@ -1055,6 +1086,9 @@ public:
             return {false, "", "", 0, 0};
         }
 
+        ++it->second.verification_count;
+        it->second.last_verified_at = now;
+
         return {true, it->second.extension_id, *matched_capability,
                 it->second.issued_at, it->second.expires_at};
     }
@@ -1071,7 +1105,24 @@ public:
             return "";
         }
 
-        const std::string token_id = signing_key_id + "-" + std::to_string(next_token_id_++);
+        std::string token_id;
+        for (size_t attempt = 0; attempt < 8; ++attempt) {
+            const std::string random_suffix = secure_random_token_suffix_hex(kTokenIdRandomBytes);
+            if (random_suffix.empty()) {
+                return "";
+            }
+
+            token_id = signing_key_id + "-" + random_suffix;
+            if (issued_tokens_.find(token_id) == issued_tokens_.end()) {
+                break;
+            }
+            token_id.clear();
+        }
+
+        if (token_id.empty()) {
+            return "";
+        }
+
         const std::string unsigned_token = build_unsigned_token(kTokenVersion, extension_id, token_id);
         const std::string signature = compute_signature(unsigned_token, current_signing_key());
         const std::string token = unsigned_token + "." + signature;
@@ -1086,7 +1137,9 @@ public:
             extension_id,
             std::move(granted_capabilities),
             now,
-            expiry_seconds > 0 ? static_cast<uint64_t>(now + expiry_seconds) : 0
+            expiry_seconds > 0 ? static_cast<uint64_t>(now + expiry_seconds) : 0,
+            0,
+            0
         };
         
         issued_tokens_[token_id] = metadata;
@@ -1139,11 +1192,12 @@ private:
         std::vector<std::string> capabilities;
         uint64_t issued_at;
         uint64_t expires_at;
+        uint64_t verification_count;
+        uint64_t last_verified_at;
     };
 
     mutable std::mutex token_mutex_;
     std::unordered_map<std::string, TokenMetadata> issued_tokens_;
-    uint64_t next_token_id_ = 1;
 };
 
 /// @brief Default policy service implementation
